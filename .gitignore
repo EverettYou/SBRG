@@ -1,0 +1,16 @@
+build
+dist
+_build
+*.json
+*.nb
+*.py[co]
+__pycache__
+*.egg-info
+*~
+*.bak
+.ipynb_checkpoints
+.tox
+.DS_Store
+\#*#
+.#*
+.coverage
