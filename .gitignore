@@ -3,6 +3,7 @@ dist
 _build
 *.json
 *.nb
+*.dat
 *.py[co]
 __pycache__
 *.egg-info
