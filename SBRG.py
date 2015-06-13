@@ -164,6 +164,7 @@ class SBRG:
         self.H = deepcopy(model['H']) # physical Hamiltonian
         self.Heff = [] # effective Hamiltonian
         self.gates = [] # Clifford gates collected along the way
+        self.taus = [] # conserved quantities
         self.trash = [] # terms truncated in 2nd order perturbation
     # one RG step forward
     def next_step(self):
@@ -220,16 +221,20 @@ class SBRG:
             stp_count += 1
         if self.recover: # recover original locality
             blk = list(range(self.N)) # to keep track of the action of SWAP gates
+            Ng = len(self.gates)
             for l, Us in enumerate(reversed(self.gates)):
                 if len(Us)>0 and Us[-1][0] == 'SWAP': # if Us ends with a SWAP gate
                     i, j = Us[-1][1]
                     # perform swap to the C4 gates in IR direction
-                    swap(i, j, chain(*((C4[1] for C4 in C4s) for C4s in self.gates[-l:])))
+                    swap(i, j, chain(*((C4[1] for C4 in C4s) for C4s in self.gates[Ng-l:])))
                     blk[i], blk[j] = blk[j], blk[i]
                     del Us[-1] # drop the SWAP gate
             imap = {fr: to for (to, fr) in enumerate(blk)}
             for term in self.Heff: # update Heff mat indices
                 term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
+            # reconstruct the conserved quantities in the original basis
+            self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
+            unitary_bk(list(chain(*self.gates)), self.taus)
 # Model Hamiltonians
 import random
 # H of TFIsing
