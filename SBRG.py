@@ -234,6 +234,8 @@ class SBRG:
                 term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
             # reconstruct the conserved quantities in the original basis
             self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
+            self.taus.extend([[{i: 3}, 0] for i in 
+                              set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)])
             unitary_bk(list(chain(*self.gates)), self.taus)
 # Model Hamiltonians
 import random
