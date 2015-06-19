@@ -177,12 +177,31 @@ def perturbation(H_offdiag, h0, i_now, min_scale, max_rate, trash_add):
     # the backward correction to the leading energy scale
     H_prod.append([{i_now: 3}, sum(val**2 for [mat, val] in H_offdiag)/(2*h0)])
     return H_prod
+# find rank of a Pauli group
+def pauli_rank(mats):
+    # mats is a list of Pauli monomials as generators
+    n = len(mats) # get num of projected stablizers
+    adj = np.zeros((n, n), dtype=int) # prepare empty adj mat
+    # construct adj mat
+    for k1 in range(n):
+        mat1_get = mats[k1].get
+        mat1_keys = mats[k1].keys()
+        for k2 in range(k1 + 1, n):
+            mat2_keys = mats[k2].keys()
+            if mat1_keys & mat2_keys: # if keys intersect
+                mat2_get = mats[k2].get
+                merged = merge(mat1_get, mat2_get, mat1_keys, mat2_keys)
+                if sum(1 for [i, mu1, mu2] in merged 
+                       if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2:
+                    # if not commute, set adj to 1
+                    adj[k1, k2] = adj[k2, k1] = 1
+    return Z2rank(adj) # return Z2 rank of adj
 # check if a matrix is identity starting from i_now position
 def is_iden(mat, i_now):
     return max(mat.keys()) <= i_now
 # check if mat is supported in both A and B
 def is_shared(mat, A, B):
-    return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys()) 
+    return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
 # SBRG class
 from copy import deepcopy
 from itertools import chain
@@ -270,6 +289,7 @@ class SBRG:
                               set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)])
             unitary_bk(list(chain(*self.gates)), self.taus)
         return self
+    # EE of a region, in unit of bit
     def entropy(self, region):
         # bipartition the system into A and B
         A = set(region)
@@ -277,23 +297,8 @@ class SBRG:
         # filter out shared stablizers, project to A
         sA = [{i: mu for i, mu in mat.items() if i in A} 
              for mat, val in self.taus if is_shared(mat, A, B)]
-        n = len(sA) # get num of projected stablizers
-        adj = np.zeros((n, n), dtype=int) # prepare empty adj mat
-        for k1 in range(n):
-            mat1_get = sA[k1].get
-            mat1_keys = sA[k1].keys()
-            for k2 in range(k1 + 1, n):
-                mat2_keys = sA[k2].keys()
-                if mat1_keys & mat2_keys: # if keys intersect
-                    mat2_get = sA[k2].get
-                    merged = merge(mat1_get, mat2_get, mat1_keys, mat2_keys)
-                    if sum(1 for [i, mu1, mu2] in merged 
-                           if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2:
-                        # if not commute, set adj to 1
-                        adj[k1, k2] = adj[k2, k1] = 1
-        # entropy is given by (1/2) of the Z2 rank of adj
-        S = Z2rank(adj)/2 # in unit of bit
-        return S
+        # entropy is given by (1/2) rank of sA
+        return pauli_rank(sA)/2
 # Model Hamiltonians
 import random
 # H of TFIsing
