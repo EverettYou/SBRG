@@ -1,0 +1,16 @@
+!    -*- f90 -*-
+! Note: the context of this file is case sensitive.
+
+python module fortran_ext ! in 
+    interface  ! in :fortran_ext
+        subroutine z2rank(r,mat,nr,nc) ! in :fortran_ext:fortran_ext.f90
+            integer, intent(out) :: r
+            integer, dimension(nr,nc) :: mat
+            integer, intent(hide), depend(mat) :: nr=shape(mat,0)
+            integer, intent(hide), depend(mat) :: nc=shape(mat,1)
+        end subroutine z2rank
+    end interface 
+end python module fortran_ext
+
+! This file was auto-generated with f2py (version:2).
+! See http://cens.ioc.ee/projects/f2py2e/
