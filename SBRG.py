@@ -1,31 +1,3 @@
-# Math
-import numpy as np
-# find Z2 rank of integer matrix
-def Z2rank(mat):
-    # mat input as numpy.matrix, and destroyed on output!
-    # caller must ensure mat contains only 0 and 1.
-    nr, nc = mat.shape # get num of rows and cols
-    r = 0 # current row index
-    for i in range(nc): # run through cols
-        if r == nr: # row exhausted first
-            return r # row rank is full, early return
-        if mat[r, i] == 0: # need to find pivot
-            found = False # set a flag
-            for k in range(r + 1, nr):
-                if mat[k, i]: # mat[k, i] nonzero
-                    found = True # pivot found in k
-                    break
-            if found: # if pivot found in k
-                mat[[r, k], :] = mat[[k, r], :] # row swap
-            else: # if pivot not found
-                continue # done with this col
-        # pivot has moved to mat[r, i], perform GE
-        for j in range(r + 1, nr):
-            if mat[j, i]: # mat[j, i] nonzero
-                mat[j, i:] = (mat[j, i:] + mat[r, i:])%2
-        r += 1 # rank inc
-    # col exhausted, last nonvanishing row indexed by r
-    return r
 # dict of single-bit dot product rules
 DOT_RULES = {(0,0): (0,0),
              (0,1): (1,0),
@@ -183,6 +155,8 @@ def is_iden(mat, i_now):
 def is_shared(mat, A, B):
     return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
 # find rank of a Pauli group
+import numpy as np
+from fortran_ext import z2rank
 def pauli_rank(mats):
     # mats is a list of Pauli monomials as generators
     n = len(mats) # get num of projected stablizers
@@ -200,7 +174,7 @@ def pauli_rank(mats):
                        if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2:
                     # if not commute, set adj to 1
                     adj[k1, k2] = adj[k2, k1] = 1
-    return Z2rank(adj) # return Z2 rank of adj
+    return z2rank(adj) # return Z2 rank of adj
 # collect 1D entropy data
 # by highly efficient stabilizer dipatching
 from math import ceil, floor
