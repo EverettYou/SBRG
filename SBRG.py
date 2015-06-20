@@ -22,8 +22,7 @@ def Z2rank(mat):
         # pivot has moved to mat[r, i], perform GE
         for j in range(r + 1, nr):
             if mat[j, i]: # mat[j, i] nonzero
-                for k in range(i, nc):
-                    mat[j, k] = (mat[j, k] + mat[r, k])%2
+                mat[j, i:] = (mat[j, i:] + mat[r, i:])%2
         r += 1 # rank inc
     # col exhausted, last nonvanishing row indexed by r
     return r
@@ -177,6 +176,12 @@ def perturbation(H_offdiag, h0, i_now, min_scale, max_rate, trash_add):
     # the backward correction to the leading energy scale
     H_prod.append([{i_now: 3}, sum(val**2 for [mat, val] in H_offdiag)/(2*h0)])
     return H_prod
+# check if a matrix is identity starting from i_now position
+def is_iden(mat, i_now):
+    return max(mat.keys()) <= i_now
+# check if mat is supported in both A and B
+def is_shared(mat, A, B):
+    return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
 # find rank of a Pauli group
 def pauli_rank(mats):
     # mats is a list of Pauli monomials as generators
@@ -196,12 +201,73 @@ def pauli_rank(mats):
                     # if not commute, set adj to 1
                     adj[k1, k2] = adj[k2, k1] = 1
     return Z2rank(adj) # return Z2 rank of adj
-# check if a matrix is identity starting from i_now position
-def is_iden(mat, i_now):
-    return max(mat.keys()) <= i_now
-# check if mat is supported in both A and B
-def is_shared(mat, A, B):
-    return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
+# collect 1D entropy data
+# by highly efficient stabilizer dipatching
+from math import ceil, floor
+def entropy1D(system, Lmin = 1, Lmax = float('inf'), dL = 1):
+    N = system.N # get system size
+    # legalize the input parameters
+    Lmin = max(Lmin, 1)
+    Lmax = min(Lmax, floor(N/2))
+    dL = max(dL, 1)
+    # list of projected stabilizers
+    fractions = []
+    ind_fw = 0
+    ind_bk = 0
+    # {cut: index to fractions,...}, where cut = (1st site, length)
+    stabilizer_dict = {}
+    # run through stablizers
+    for mat, val in system.taus:
+        # decompose to a list of single-bit gates
+        gs = sorted(mat.items())
+        n = len(gs) # num of single-bit gates
+        # sites that the gates act on
+        sites = [i for i, mu in gs] 
+        sites.append(sites[0] + N)
+        # regions of entanglement cuts
+        regions = [(sites[i], sites[i + 1]) for i in range(n)]
+        for l in range(n - 1):
+            regions_l = regions[l]
+            for r in range(l + 1, n):
+                regions_r = regions[r]
+                to_push_fw = True
+                to_push_bk = True
+                for cut_l in range(*regions_l):
+                    a, b = regions_r
+                    ma = max(a, cut_l + ceil(N/2), cut_l + N - Lmax)
+                    mb = min(b, cut_l + floor(N/2) + 1, cut_l + Lmax + 1)
+                    aL = cut_l + Lmin
+                    a = max(a, aL + max(ceil((a - aL)/dL), 0)*dL)
+                    bL = cut_l + N - Lmin + 1
+                    b = min(b, bL - max(ceil((bL - b)/dL), 0)*dL)
+                    if a < mb: # forward cutting will run
+                        if to_push_fw:
+                            fractions.append(dict(gs[l+1:r+1]))
+                            ind_fw = len(fractions) - 1
+                            to_push_fw = False
+                        for cut_r in range(a, mb, dL):
+                            cut = ((cut_l + 1)%N, cut_r - cut_l)
+                            try:
+                                stabilizer_dict[cut].append(ind_fw)
+                            except:
+                                stabilizer_dict[cut] = [ind_fw]
+                    if b > ma: # backward cutting will run
+                        if to_push_bk:
+                            fractions.append(dict(gs[:l+1]+gs[r+1:]))
+                            ind_bk = len(fractions) - 1
+                            to_push_bk = False
+                        for cut_r in range(b - 1, ma - 1, -dL):
+                            cut = ((cut_r + 1)%N, cut_l - cut_r + N)
+                            try:
+                                stabilizer_dict[cut].append(ind_bk)
+                            except:
+                                stabilizer_dict[cut] = [ind_bk]
+    # now projective stabilizer are in fractions
+    # and stabilizer_dict recorded the index to fractions
+    # calculate the entropy
+    entropy_dict = {cut: pauli_rank([fractions[i] for i in inds])/2 
+                    for cut, inds in stabilizer_dict.items()}
+    return entropy_dict
 # SBRG class
 from copy import deepcopy
 from itertools import chain
