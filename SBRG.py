@@ -22,6 +22,7 @@ def merge(mat1_get, mat2_get, mat1_keys, mat2_keys):
 def dotover(merged):
     for triple in merged:
         triple[1], triple[2] = DOT_RULES[(triple[1], triple[2])]
+    return merged
 # get overall exponent
 def powofi(merged, n0 = 0):
     return (sum(triple[2] for triple in merged) + n0)%4
@@ -325,8 +326,9 @@ class SBRG:
                 term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
             # reconstruct the conserved quantities in the original basis
             self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
-            self.taus.extend([[{i: 3}, 0] for i in 
-                              set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)])
+            zms = set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)
+            self.Heff.extend([[{i: 3}, 0] for i in zms])
+            self.taus.extend([[{i: 3}, 0] for i in zms])
             unitary_bk(list(chain(*self.gates)), self.taus)
         return self
     # EE of a region, in unit of bit
@@ -341,7 +343,7 @@ class SBRG:
         return pauli_rank(sA)/2
 # Model Hamiltonians
 import random
-# H of TFIsing
+# TFIsing model
 def TFIsing(L, **para):
     # L - number of sites (assuming PBC)
     # model - a dict of model parameters {J, alpha_J, K, alpha_K, h, alpha_h}
@@ -354,6 +356,45 @@ def TFIsing(L, **para):
         H_append([{i: 3, (i+1)%L: 3}, para['K']*rnd_beta(para['alpha_K'], 1)])
         H_append([{i: 3}, para['h']*rnd_beta(para['alpha_h'], 1)])
     H = [term for term in H if abs(term[1]) > 0]
+    return {'bits': L, 'H': H}
+# Kitaev random interaction model
+def KitaevRIM(L, alpha):
+    # L - number of qubits
+    # alpha - shape of initial distribution
+    fs = [] # prepare the reps of fermions
+    for k in range(L):
+        fs.append({i: 3 for i in range(k)})
+        fs[-1][k] = 1
+        fs.append({i: 3 for i in range(k)})
+        fs[-1][k] = 2
+    N = 2*L
+    H = []
+    H_append = H.append
+    rnd_beta = random.betavariate
+    for i1 in range(N):
+        f1 = fs[i1]
+        f1_get = f1.get
+        f1_keys = f1.keys()
+        for i2 in range(i1+1,N):
+            f2 = fs[i2]
+            f2_get = f2.get
+            f2_keys = f2.keys()
+            f12 = newmat(dotover(merge(f1_get,f2_get,f1_keys,f2_keys)))
+            f12_get = f12.get
+            f12_keys = f12.keys()
+            for i3 in range(i2+1,N):
+                f3 = fs[i3]
+                f3_get = f3.get
+                f3_keys = f3.keys()
+                f123 = newmat(dotover(merge(f12_get,f3_get,f12_keys,f3_keys)))
+                f123_get = f123.get
+                f123_keys = f123.keys()
+                for i4 in range(i3+1,N):
+                    f4 = fs[i4]
+                    f4_get = f4.get
+                    f4_keys = f4.keys()
+                    f1234 = newmat(dotover(merge(f123_get,f4_get,f123_keys,f4_keys)))
+                    H_append([f1234, rnd_beta(alpha,1)])
     return {'bits': L, 'H': H}
 # Toolbox 
 # I/O 
