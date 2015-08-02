@@ -155,6 +155,9 @@ def is_iden(mat, i_now):
 # check if mat is supported in both A and B
 def is_shared(mat, A, B):
     return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
+# check if mat is off-diagonal
+def is_offdiag(mat):
+    return any(mu == 1 or mu == 2 for mu in mat.values())
 # find rank of a Pauli group
 import numpy as np
 from fortran_ext import z2rank
@@ -253,23 +256,27 @@ class SBRG:
         self.recover = True
         self.N = model['bits'] # total number of bits
         self.Neff = 0 # number of effective bits that has been discovered
-        self.H = deepcopy(model['H']) # physical Hamiltonian
+        self.Hbdy = deepcopy(model['H']) # holographic boundary Hamiltonian
         self.Heff = [] # effective Hamiltonian
+        self.Hblk = deepcopy(model['H']) # holographic bulk Hamiltonian
         self.gates = [] # Clifford gates collected along the way
         self.taus = [] # conserved quantities
         self.trash = [] # terms truncated in 2nd order perturbation
     # one RG step forward
     def next_step(self):
         i_now = self.Neff
-        H_UV = self.H
+        H_UV = self.Hblk
         if len(H_UV) == 0: # return if H = 0
             # some emergent qubits are zero modes
             self.Neff = self.N # no physical qubits left
             return H_UV
         # find the leading energy scale
         [mat_H0, h0] = max(H_UV, key=term_val)
+        if abs(h0) == 0.: # leading energy scale vanishes
+            self.Neff = self.N # no physical qubits left
+            return H_UV
         min_scale = abs(h0*self.tol)
-         # diagonalize the leading term
+        # diagonalize the leading term
         Us = find_rotation(mat_H0, i_now)
         self.gates.append(Us)
         # perform unitary transforms to the whole Hamiltonian
@@ -298,10 +305,10 @@ class SBRG:
                     H_IR[-1][1] += val # add val to
         # mark out identity terms in the remaining physical space
         H_gather = [(is_iden(term[0], i_now), term) for term in H_IR]
-        self.H = [term for (iden, term) in H_gather if not iden]
+        self.Hblk = [term for (iden, term) in H_gather if not iden]
         self.Heff.extend([term for (iden, term) in H_gather if iden])
         self.Neff = i_now + 1 # tau bits counter inc
-        return self.H
+        return self.Hblk
     # RG flow
     def flow(self, step = float('inf')):
         # carry out RG flow
@@ -330,6 +337,9 @@ class SBRG:
             self.Heff.extend([[{i: 3}, 0] for i in zms])
             self.taus.extend([[{i: 3}, 0] for i in zms])
             unitary_bk(list(chain(*self.gates)), self.taus)
+            # reconstruct the holographic bulk Hamiltonian
+            self.Hblk = deepcopy(self.Hbdy)
+            unitary_fd(list(chain(*self.gates)), self.Hblk)
         return self
     # EE of a region, in unit of bit
     def entropy(self, region):
@@ -346,15 +356,24 @@ import random
 # TFIsing model
 def TFIsing(L, **para):
     # L - number of sites (assuming PBC)
-    # model - a dict of model parameters {J, alpha_J, K, alpha_K, h, alpha_h}
-    H = []
+    # model - a dict of model parameters
+    try: # set parameter alpha
+        alpha = para['alpha']
+        alpha_J = alpha
+        alpha_K = alpha
+        alpha_h = alpha
+    except:
+        alpha_J = para.get('alpha_J',1)
+        alpha_K = para.get('alpha_K',1)
+        alpha_h = para.get('alpha_h',1)
+    H = [] # prepare empty H
     # translate over the lattice by deque rotation
     H_append = H.append
     rnd_beta = random.betavariate
     for i in range(L):
-        H_append([{i: 1, (i+1)%L: 1}, para['J']*rnd_beta(para['alpha_J'], 1)])
-        H_append([{i: 3, (i+1)%L: 3}, para['K']*rnd_beta(para['alpha_K'], 1)])
-        H_append([{i: 3}, para['h']*rnd_beta(para['alpha_h'], 1)])
+        H_append([{i: 1, (i+1)%L: 1}, para['J']*rnd_beta(alpha_J, 1)])
+        H_append([{i: 3, (i+1)%L: 3}, para['K']*rnd_beta(alpha_K, 1)])
+        H_append([{i: 3}, para['h']*rnd_beta(alpha_h, 1)])
     H = [term for term in H if abs(term[1]) > 0]
     return {'bits': L, 'H': H}
 # Kitaev random interaction model
@@ -395,6 +414,26 @@ def KitaevRIM(L, alpha):
                     f4_keys = f4.keys()
                     f1234 = newmat(dotover(merge(f123_get,f4_get,f123_keys,f4_keys)))
                     H_append([f1234, rnd_beta(alpha,1)])
+    return {'bits': L, 'H': H}
+def KitaevRIM2(L, M):
+    # L - number of qubits
+    # alpha - shape of initial distribution
+    fs = [] # prepare the reps of fermions
+    for k in range(L):
+        fs.append({i: 3 for i in range(k)})
+        fs[-1][k] = 1
+        fs.append({i: 3 for i in range(k)})
+        fs[-1][k] = 2
+    N = 2*L
+    H = []
+    H_append = H.append
+    rand_sample = random.sample
+    rand = random.random
+    for a in range(M):
+        f4 = [[mat, 1] for mat in rand_sample(fs, 4)]
+        v = dot(dot(f4[0],f4[1],1),dot(f4[2],f4[3],-1))
+        v[1] = v[1]*rand()
+        H_append(v)
     return {'bits': L, 'H': H}
 # Toolbox 
 # I/O 
