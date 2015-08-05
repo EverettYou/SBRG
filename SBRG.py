@@ -158,6 +158,16 @@ def is_shared(mat, A, B):
 # check if mat is off-diagonal
 def is_offdiag(mat):
     return any(mu == 1 or mu == 2 for mu in mat.values())
+# return the span of Pauli operator 
+# (head to tail length, not the number of supports)
+def mat_span(mat,L):
+    mus = list(mat.keys())
+    mus.sort()
+    diff = [snd-fst for fst, snd in zip(mus, mus[1:] + [mus[0]+L])]
+    i = diff.index(max(diff))
+    mu0 = mus[(i+1)%len(mus)]
+    mu1 = mus[i]
+    return (mu1-mu0)%L
 # find rank of a Pauli group
 import numpy as np
 from fortran_ext import z2rank
@@ -254,6 +264,8 @@ class SBRG:
         self.tol = 1.e-8
         self.max_rate = 2.
         self.recover = True
+        self.make_taus = True
+        self.make_Hblk = True
         self.N = model['bits'] # total number of bits
         self.Neff = 0 # number of effective bits that has been discovered
         self.Hbdy = deepcopy(model['H']) # holographic boundary Hamiltonian
@@ -331,13 +343,15 @@ class SBRG:
             imap = {fr: to for (to, fr) in enumerate(blk)}
             for term in self.Heff: # update Heff mat indices
                 term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
-            # reconstruct the conserved quantities in the original basis
+        # reconstruct the conserved quantities in the original basis
+        if self.make_taus: # recover original locality
             self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
             zms = set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)
             self.Heff.extend([[{i: 3}, 0] for i in zms])
             self.taus.extend([[{i: 3}, 0] for i in zms])
             unitary_bk(list(chain(*self.gates)), self.taus)
-            # reconstruct the holographic bulk Hamiltonian
+        # reconstruct the holographic bulk Hamiltonian
+        if self.make_Hblk: # recover original locality
             self.Hblk = deepcopy(self.Hbdy)
             unitary_fd(list(chain(*self.gates)), self.Hblk)
         return self
