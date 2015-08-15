@@ -343,17 +343,17 @@ class SBRG:
             imap = {fr: to for (to, fr) in enumerate(blk)}
             for term in self.Heff: # update Heff mat indices
                 term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
-        # reconstruct the conserved quantities in the original basis
-        if self.make_taus: # recover original locality
-            self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
-            zms = set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)
-            self.Heff.extend([[{i: 3}, 0] for i in zms])
-            self.taus.extend([[{i: 3}, 0] for i in zms])
-            unitary_bk(list(chain(*self.gates)), self.taus)
-        # reconstruct the holographic bulk Hamiltonian
-        if self.make_Hblk: # recover original locality
-            self.Hblk = deepcopy(self.Hbdy)
-            unitary_fd(list(chain(*self.gates)), self.Hblk)
+            # reconstruct the conserved quantities in the original basis
+            if self.make_taus: # recover original locality
+                self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
+                zms = set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)
+                self.Heff.extend([[{i: 3}, 0] for i in zms])
+                self.taus.extend([[{i: 3}, 0] for i in zms])
+                unitary_bk(list(chain(*self.gates)), self.taus)
+            # reconstruct the holographic bulk Hamiltonian
+            if self.make_Hblk: # recover original locality
+                self.Hblk = deepcopy(self.Hbdy)
+                unitary_fd(list(chain(*self.gates)), self.Hblk)
         return self
     # EE of a region, in unit of bit
     def entropy(self, region):
