@@ -9,7 +9,30 @@ python module fortran_ext ! in
             integer, intent(hide), depend(mat) :: nr=shape(mat,0)
             integer, intent(hide), depend(mat) :: nc=shape(mat,1)
         end subroutine z2rank
-    end interface 
+        module ipu ! in :fortran_ext:fortran_ext.f90
+            integer, allocatable,dimension(:) :: a
+            integer, allocatable,dimension(:) :: c
+            integer, allocatable,dimension(:) :: b
+            integer :: na
+            integer :: nb
+            integer :: nc
+            subroutine setab(a0,b0,na,nb) ! in :fortran_ext:fortran_ext.f90:ipu
+                integer dimension(na) :: a0
+                integer dimension(nb) :: b0
+                integer, intent(hide), depend(a0) :: na=len(a0)
+                integer, intent(hide), depend(b0) :: nb=len(b0)
+            end subroutine setab
+            subroutine overlap(dups) ! in :fortran_ext:fortran_ext.f90:ipu
+                integer, intent(out) :: dups
+            end subroutine overlap
+            subroutine merge ! in :fortran_ext:fortran_ext.f90:ipu
+            end subroutine merge
+            subroutine combine ! in :fortran_ext:fortran_ext.f90:ipu
+            end subroutine combine
+            subroutine intersect ! in :fortran_ext:fortran_ext.f90:ipu
+            end subroutine intersect
+        end module ipu
+    end interface
 end python module fortran_ext
 
 ! This file was auto-generated with f2py (version:2).

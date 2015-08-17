@@ -1,0 +1,35 @@
+!    -*- f90 -*-
+! Note: the context of this file is case sensitive.
+
+python module fortran_ext ! in 
+    interface  ! in :fortran_ext
+        subroutine z2rank(rnk,mat,nr,nc) ! in :fortran_ext:fortran_ext.f90
+            integer :: rnk
+            integer dimension(nr,nc) :: mat
+            integer, optional,check(shape(mat,0)==nr),depend(mat) :: nr=shape(mat,0)
+            integer, optional,check(shape(mat,1)==nc),depend(mat) :: nc=shape(mat,1)
+        end subroutine z2rank
+        module ipu ! in :fortran_ext:fortran_ext.f90
+            integer, allocatable,dimension(:) :: a
+            integer, allocatable,dimension(:) :: c
+            integer, allocatable,dimension(:) :: b
+            integer :: na
+            integer :: nb
+            integer :: nc
+            subroutine setab(a0,b0,na0,nb0) ! in :fortran_ext:fortran_ext.f90:ipu
+                integer dimension(na0) :: a0
+                integer dimension(nb0) :: b0
+                integer, optional,check(len(a0)>=na0),depend(a0) :: na0=len(a0)
+                integer, optional,check(len(b0)>=nb0),depend(b0) :: nb0=len(b0)
+            end subroutine setab
+            subroutine overlap(dups) ! in :fortran_ext:fortran_ext.f90:ipu
+                integer :: dups
+            end subroutine overlap
+            subroutine merge ! in :fortran_ext:fortran_ext.f90:ipu
+            end subroutine merge
+        end module ipu
+    end interface 
+end python module fortran_ext
+
+! This file was auto-generated with f2py (version:2).
+! See http://cens.ioc.ee/projects/f2py2e/
