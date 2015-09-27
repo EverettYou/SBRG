@@ -4,7 +4,8 @@ from operator import attrgetter
 from itertools import combinations
 
 ### Fortran extensions ###
-from fortran_ext import z2rank, ipu
+#from fortran_ext import z2rank, ipu
+"""
 def overlap(lst1, lst2):
     ipu.setab(array(lst1), array(lst2))
     return ipu.overlap()
@@ -20,6 +21,15 @@ def intersect(lst1, lst2):
     ipu.setab(array(lst1), array(lst2))
     ipu.intersect()
     return list(ipu.c[:ipu.nc])
+"""
+
+# index handling
+def overlap(lst1, lst2):
+    return len(set(lst1).intersection(lst2))
+def merge(lst1, lst2):
+    return list(set(lst1).symmetric_difference(lst2))
+def combine(lst1, lst2):
+    return list(set(lst1).union(lst2))
 
 ### Pauli Operator ###
 class Pauli:
