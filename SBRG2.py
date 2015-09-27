@@ -4,79 +4,52 @@ from operator import attrgetter
 from itertools import combinations
 
 ### Fortran extensions ###
-#from fortran_ext import z2rank, ipu
-"""
-def overlap(lst1, lst2):
-    ipu.setab(array(lst1), array(lst2))
-    return ipu.overlap()
-def merge(lst1, lst2):
-    ipu.setab(array(lst1), array(lst2))
-    ipu.merge()
-    return list(ipu.c[:ipu.nc])
-def combine(lst1, lst2):
-    ipu.setab(array(lst1), array(lst2))
-    ipu.combine()
-    return list(ipu.c[:ipu.nc])
-def intersect(lst1, lst2):
-    ipu.setab(array(lst1), array(lst2))
-    ipu.intersect()
-    return list(ipu.c[:ipu.nc])
-"""
-
-# index handling
-def overlap(lst1, lst2):
-    return len(set(lst1).intersection(lst2))
-def merge(lst1, lst2):
-    return list(set(lst1).symmetric_difference(lst2))
-def combine(lst1, lst2):
-    return list(set(lst1).union(lst2))
+# from fortran_ext import z2rank, ipu
 
 ### Pauli Operator ###
 class Pauli:
     def __init__(self, *arg):
         l_arg = len(arg)
         if l_arg == 2:
-            self.Xs, self.Zs = arg
+            self.Xs = set(arg[0])
+            self.Zs = set(arg[1])
         elif l_arg == 1:
             inds = arg[0]
-            self.Xs = []
-            self.Zs = []
+            self.Xs = set()
+            self.Zs = set()
             if isinstance(inds, dict): # dict of inds rules
                 for (i, mu) in inds.items():
                     if mu == 1:
-                        self.Xs.append(i)
+                        self.Xs.add(i)
                     elif mu == 3:
-                        self.Zs.append(i)
+                        self.Zs.add(i)
                     elif mu == 2:
-                        self.Xs.append(i)
-                        self.Zs.append(i)
-                # dict not ordered, need to sort
-                self.Xs.sort()
-                self.Zs.sort()
+                        self.Xs.add(i)
+                        self.Zs.add(i)
             elif isinstance(inds, (tuple, list)): # list of inds
                 for (i, mu) in enumerate(inds):
                     if mu == 0:
                         continue
                     elif mu == 1:
-                        self.Xs.append(i)
+                        self.Xs.add(i)
                     elif mu == 3:
-                        self.Zs.append(i)
+                        self.Zs.add(i)
                     elif mu == 2:
-                        self.Xs.append(i)
-                        self.Zs.append(i)
+                        self.Xs.add(i)
+                        self.Zs.add(i)
         elif l_arg == 0:
-            self.Xs = []
-            self.Zs = []
-        self.ipower = overlap(self.Xs, self.Zs)
+            self.Xs = set()
+            self.Zs = set()
+        self.ipower = len(self.Xs & self.Zs)
         self.key = hash((tuple(self.Xs), tuple(self.Zs)))
     def __repr__(self):
         return "<Xs:%s Zs:%s>" % (self.Xs, self.Zs)
 # commutativity check
 def is_commute(mat1, mat2):
-    return (overlap(mat1.Xs, mat2.Zs) - overlap(mat1.Zs, mat2.Xs))%2 == 0
+    return (len(mat1.Xs & mat2.Zs) - len(mat1.Zs & mat2.Xs))%2 == 0
 # merging Pauli indices (coefficient not determined here)
 def pdot(mat1, mat2):
-    return Pauli(merge(mat1.Xs, mat2.Xs), merge(mat1.Zs, mat2.Zs))
+    return Pauli(mat1.Xs ^ mat2.Xs, mat1.Zs ^ mat2.Zs)
 
 ### Pauli Monomial ###
 class Term:
@@ -120,7 +93,7 @@ def dot(term1, term2):
     mat2 = term2.mat
     mat = pdot(mat1, mat2)
     n = mat1.ipower + mat2.ipower - mat.ipower
-    n = n + 2*overlap(mat1.Zs, mat2.Xs)
+    n = n + 2*len(mat1.Zs & mat2.Xs)
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
 # dot product of two terms (times additional i)
@@ -129,7 +102,7 @@ def idot(term1, term2):
     mat2 = term2.mat
     mat = pdot(mat1, mat2)
     n = mat1.ipower + mat2.ipower - mat.ipower
-    n = n + 2*overlap(mat1.Zs, mat2.Xs) + 1
+    n = n + 2*len(mat1.Zs & mat2.Xs) + 1
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
 
@@ -212,7 +185,7 @@ class Poly:
                 C.IR.UV = C
     def _imap_add(self, term):
         mat = term.mat
-        sites = combine(mat.Xs, mat.Zs)
+        sites = mat.Xs | mat.Zs
         for i in sites:
             try:
                 self.imap[i].add(term)
@@ -220,7 +193,7 @@ class Poly:
                 self.imap[i] = {term}
     def _imap_remove(self, term):
         mat = term.mat
-        for i in combine(mat.Xs, mat.Zs):
+        for i in mat.Xs | mat.Zs:
             self.imap[i].remove(term)
     def extend(self, other):
         # orther - a list of terms
@@ -324,7 +297,7 @@ class Poly:
     def _C4(self, gen, sgn = +1):
         # collect terms to be transformed
         terms = set() # start with empty set
-        for i in combine(gen.mat.Xs, gen.mat.Zs): # supporting sites of gen
+        for i in gen.mat.Xs | gen.mat.Zs: # supporting sites of gen
             if i in self.imap: # if i registered in imap
                 terms.update(self.imap[i]) # add the related terms
         # filter out non-commuting terms
@@ -364,21 +337,21 @@ class SBRG:
         self.Hblk = []
         self.Heff = []
         self.EHM = []
-        self.phybits = list(range(self.L))
+        self.phybits = set(range(self.L))
         self.bit = 0
         self.trash = []
     def _findR(self, mat):
         if len(mat.Xs) > 0: # if X or Y exists, use it to pivot the rotation
-            self.bit = mat.Xs[0] # take first off-diag qubit
+            self.bit = min(mat.Xs) # take first off-diag qubit
             return [idot(Term(Pauli([],[self.bit])), Term(mat))]
         else: # if only Z
             if len(mat.Zs) > 1:
-                for self.bit in mat.Zs: # find first Z in phybits
+                for self.bit in sorted(list(mat.Zs)): # find first Z in phybits
                     if (self.bit in self.phybits):
                         tmp = Term(Pauli([self.bit],[])) # set intermediate term
                         return [idot(tmp, Term(mat)), idot(Term(Pauli([],[self.bit])), tmp)]
             elif len(mat.Zs) == 1:
-                self.bit = mat.Zs[0]
+                self.bit = min(mat.Zs)
         return []
     def _perturbation(self, H0, offdiag):
         h0 = H0.val # set h0
@@ -404,7 +377,7 @@ class SBRG:
         # get leading energy scale
         H0 = self.H.UVscale
         if abs(H0.val) == 0.: # if leading scale vanishes
-            self.phybits = [] # quench physical space
+            self.phybits = set() # quench physical space
             return self
         # find Clifford rotations
         Rs = self._findR(H0.mat)
@@ -419,7 +392,7 @@ class SBRG:
         self.phybits.remove(self.bit) # reduce physical bits
         # remove identity terms in physical space
         for term in list(self.H.imap[self.bit]):
-            if overlap(term.mat.Xs, self.phybits) + overlap(term.mat.Zs, self.phybits) == 0:
+            if len(term.mat.Xs & self.phybits) + len(term.mat.Zs & self.phybits) == 0:
                 self.Heff.append(term)
                 self.H.remove(term)
     def flow(self, step = float('inf')):
