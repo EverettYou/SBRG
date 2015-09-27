@@ -250,9 +250,14 @@ class Poly:
             Cs.extend(As[iA:nA]) # dump A
         if iA >= nA: # A exhausted
             for B in Bs[iB:nB]:
-                Cs.append(B)
-                self._imap_add(B)
-                self._registerUV(B)
+                if len(Cs) == 0 or C != B: # if B is new
+                    Cs.append(B)
+                    C = B
+                    self._imap_add(B)
+                    self._registerUV(B)
+                else: # if B existed as C
+                    C.val += B.val
+                    self._updateUV(C)
         self.terms = Cs
     def _terms_remove(self, term):
         mk0 = term.mat.key
