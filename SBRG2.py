@@ -1,16 +1,15 @@
-from numpy import array
 import random
 from operator import attrgetter
 from itertools import combinations
-
-### Fortran extensions ###
-# from fortran_ext import z2rank, ipu
-
-### Pauli Operator ###
-class Pauli:
+""" Mat: tensor product of Pauli matrices
+Mat.Xs     :: set : collection of sites of X gates
+Mat.Zs     :: set : collection of sites of Z gates
+Mat.ipower :: int : number of overlap between Xs and Zs (num of Y gates)
+"""
+class Mat:
     def __init__(self, *arg):
         l_arg = len(arg)
-        if l_arg == 2:
+        if l_arg == 2: 
             self.Xs = set(arg[0])
             self.Zs = set(arg[1])
         elif l_arg == 1:
@@ -41,52 +40,42 @@ class Pauli:
             self.Xs = set()
             self.Zs = set()
         self.ipower = len(self.Xs & self.Zs)
-        self.key = hash((tuple(self.Xs), tuple(self.Zs)))
+        self._key = None
     def __repr__(self):
-        return "<Xs:%s Zs:%s>" % (self.Xs, self.Zs)
+        return "<Xs:%s Zs:%s>" % (sorted(list(self.Xs)), sorted(list(self.Zs)))
+    def __hash__(self):
+        if self._key is None:
+            self._key = hash((tuple(self.Xs), tuple(self.Zs)))
+        return self._key
+    def __eq__(self, other):
+        return self.Xs == other.Xs and self.Zs == other.Zs
+    def __neq__(self, other):
+        return self.Xs != other.Xs or self.Zs != other.Zs
 # commutativity check
 def is_commute(mat1, mat2):
     return (len(mat1.Xs & mat2.Zs) - len(mat1.Zs & mat2.Xs))%2 == 0
 # merging Pauli indices (coefficient not determined here)
 def pdot(mat1, mat2):
-    return Pauli(mat1.Xs ^ mat2.Xs, mat1.Zs ^ mat2.Zs)
-
-### Pauli Monomial ###
+    return Mat(mat1.Xs ^ mat2.Xs, mat1.Zs ^ mat2.Zs)
+""" Term: a Mat with coefficient and position
+Term.mat :: Mat : matrix of Pauli operator
+Term.val :: numeric : coefficient
+Term.pos :: int : my position in Hamiltonian.terms
+"""
 class Term:
     def __init__(self, *arg):
         l_arg = len(arg)
-        if l_arg == 1:
-            self.mat = arg[0]
-            self.val = 1.
-        elif l_arg == 2:
+        if l_arg == 2:
             self.mat, self.val = arg
+        elif l_arg == 1:
+            self.mat = arg[0]
+            self.val = 1.        
         elif l_arg == 0:
-            self.mat = Pauli()
+            self.mat = Mat()
             self.val = 1.
-        self.UV = None
-        self.IR = None
+        self.pos = 0
     def __repr__(self):
         return "%s %s" % (self.val, self.mat)
-    def __hash__(self):
-        return self.mat.key
-    def __cmp__(self, other):
-        mk0 = self.mat.key
-        mk1 = other.mat.key
-        return (mk0 > mk1) - (mk0 < mk1)
-    def __eq__(self, other):
-        if isinstance(other, Term):
-            return self.mat.key == other.mat.key
-        else:
-            return False
-    def __ne__(self, other):
-        if isinstance(other, Term):
-            return self.mat.key != other.mat.key
-        else:
-            return True
-    def __lt__(self, other): return self.mat.key < other.mat.key
-    def __gt__(self, other): return self.mat.key > other.mat.key
-    def __le__(self, other): return self.mat.key <= other.mat.key
-    def __ge__(self, other): return self.mat.key >= other.mat.key
 # dot product of two terms
 def dot(term1, term2):
     mat1 = term1.mat
@@ -105,255 +94,165 @@ def idot(term1, term2):
     n = n + 2*len(mat1.Zs & mat2.Xs) + 1
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
-
-### Pauli Polynomial ###
-class Poly:
+""" Ham: a collection of Terms
+Ham.terms :: list : terms stored in binary heap structure
+Ham.mats  :: dict : mapping tat to term
+Ham.imap  :: dict : mapping site to covering terms
+"""
+class Ham:
     def __init__(self, *arg):
-        self.isempty = True
-        self.UVscale = None
-        self.IRscale = None
         self.terms = []
-        self.imap = dict()
+        self.mats = {}
+        self.imap = {}
         if len(arg) == 1:
             self.extend(arg[0])
     def __repr__(self):
         return "%s" % self.terms
-    def _registerUV(self, C):
-        Cval = abs(C.val)
-        if self.UVscale == None and self.IRscale == None: # scale not established yet
-            self.UVscale = C
-            self.IRscale = C
-            C.UV = None
-            C.IR = None
-        elif Cval >= abs(self.UVscale.val): # over UVscale
-            C.UV = None
-            C.IR = self.UVscale
-            C.IR.UV = C
-            self.UVscale = C
-        elif Cval <= abs(self.IRscale.val): # under IRscale
-            C.IR = None
-            C.UV = self.IRscale
-            C.UV.IR = C
-            self.IRscale = C
-        else: # within scales, search for position
-            CUV = self.IRscale
-            while Cval > abs(CUV.val):
-                CUV = CUV.UV
-            C.UV = CUV
-            C.IR = CUV.IR
-            C.UV.IR = C
-            C.IR.UV = C
-    def _updateUV(self, C):
-        Cval = abs(C.val)
-        CUV = C.UV
-        if CUV != None and Cval > abs(C.UV.val): # if over UV
-            if C.IR == None:
-                C.UV.IR = None
-                self.IRscale = CUV
-            else:
-                C.UV.IR, C.IR.UV = C.IR, C.UV
-            while CUV != None and Cval > abs(CUV.val):
-                CUV = CUV.UV
-            if CUV == None:
-                C.UV = None
-                C.IR = self.UVscale
-                C.IR.UV = C
-                self.UVscale = C
-            else:
-                C.UV = CUV
-                C.IR = CUV.IR
-                C.IR.UV = C
-                C.UV.IR = C
-        CIR = C.IR
-        if CIR != None and Cval < abs(C.IR.val): # if under IR
-            if C.UV == None:
-                C.IR.UV = None
-                self.UVscale = CIR
-            else:
-                C.IR.UV, C.UV.IR = C.UV, C.IR
-            while CIR != None and Cval < abs(CIR.val):
-                CIR = CIR.IR
-            if CIR == None:
-                C.IR = None
-                C.UV = self.IRscale
-                C.UV.IR = C
-                self.IRscale = C
-            else:
-                C.IR = CIR
-                C.UV = CIR.UV
-                C.UV.IR = C
-                C.IR.UV = C
-    def _imap_add(self, term):
+    def terms_push(self, term):
+        pos = len(self.terms)
+        term.pos = pos
+        self.terms.append(term)
+        self.terms_shiftUV(pos)
+    def terms_adjust(self, term):
+        pos = term.pos
+        self.terms_shiftUV(pos)
+        self.terms_shiftIR(pos)
+    def terms_shiftUV(self, pos):
+        terms = self.terms
+        this_term = terms[pos]
+        # Follow the path to the root, moving parents down until fits.
+        while pos > 0:
+            parent_pos = (pos - 1) >> 1
+            parent_term = terms[parent_pos]
+            if abs(this_term.val) > abs(parent_term.val):
+                parent_term.pos = pos
+                terms[pos] = parent_term
+                pos = parent_pos
+                continue
+            break
+        if pos != this_term.pos: # if pos is new
+            this_term.pos = pos
+            terms[pos] = this_term
+    def terms_shiftIR(self, pos):
+        terms = self.terms
+        end_pos = len(terms)
+        this_term = terms[pos]
+        child_pos = 2*pos + 1 # left child position
+        while child_pos < end_pos:
+            # Set child_pos to index of larger child.
+            rchild_pos = child_pos + 1 # right child position
+            if rchild_pos < end_pos and abs(terms[child_pos].val) < abs(terms[rchild_pos].val):
+                child_pos = rchild_pos
+            # Move the larger child up.
+            child_term = terms[child_pos]
+            if abs(this_term.val) < abs(child_term.val):
+                child_term.pos = pos
+                terms[pos] = child_term
+                pos = child_pos
+                child_pos = 2*pos + 1 # left child position
+                continue
+            break
+        if pos != this_term.pos: # if pos is new
+            this_term.pos = pos
+            terms[pos] = this_term
+    def imap_add(self, term):
         mat = term.mat
-        sites = mat.Xs | mat.Zs
-        for i in sites:
+        for i in mat.Xs | mat.Zs:
             try:
                 self.imap[i].add(term)
             except:
                 self.imap[i] = {term}
-    def _imap_remove(self, term):
+    def imap_del(self, term):
         mat = term.mat
         for i in mat.Xs | mat.Zs:
             self.imap[i].remove(term)
-    def extend(self, other):
-        # orther - a list of terms
-        As = self.terms
-        Bs = sorted(other)
-        nA = len(As)
-        nB = len(Bs)
-        iA = 0
-        iB = 0
-        Cs = []
-        while iA < nA and iB < nB:
-            A = As[iA]
-            B = Bs[iB]
-            if A < B:
-                Cs.append(A)
-                C = A
-                iA += 1
-            elif A == B:
-                A.val += B.val
-                Cs.append(A)
-                C = A
-                self._updateUV(C)
-                iA += 1
-                iB += 1
-            else: # A > B
-                if len(Cs) == 0 or C != B: # if B is new
-                    Cs.append(B)
-                    C = B
-                    self._imap_add(C)
-                    self._registerUV(C)
-                else: # if B existed as C
-                    C.val += B.val
-                    self._updateUV(C)
-                iB += 1
-        # As or Bs has been exhausted
-        if iB >= nB: # B exhausted
-            Cs.extend(As[iA:nA]) # dump A
-        if iA >= nA: # A exhausted
-            for B in Bs[iB:nB]:
-                if len(Cs) == 0 or C != B: # if B is new
-                    Cs.append(B)
-                    C = B
-                    self._imap_add(B)
-                    self._registerUV(B)
-                else: # if B existed as C
-                    C.val += B.val
-                    self._updateUV(C)
-        self.terms = Cs
-    def _terms_remove(self, term):
-        mk0 = term.mat.key
-        n = len(self.terms)
-        a = 0
-        b = n-1
-        if self.terms[a].mat.key == mk0:
-            del self.terms[a]
-            return
-        if self.terms[b].mat.key == mk0:
-            del self.terms[b]
-            return
-        c = (a+b)//2
-        while a < b:
-            mkc = self.terms[c].mat.key
-            if mkc > mk0:
-                b = c
-                c = (a+b)//2
-            elif mkc < mk0:
-                a = c
-                c = (a+b)//2
-            else:
-                del self.terms[c]
-                return
-        del self.terms[a]
+    def push(self, term):
+        if term.mat in self.mats: # if mat already exist
+            old_term = self.mats[term.mat]
+            old_term.val += term.val
+            self.terms_adjust(old_term)
+        else: # if mat is new
+            self.terms_push(term)
+            self.mats[term.mat] = term
+            self.imap_add(term)
+    def extend(self, terms):
+        for term in terms:
+            self.push(term)
     def remove(self, term):
-        # fix UV-IR chain
-        if term.IR == None: # term is IRscale
-            self.IRscale = term.UV
-        else: # term has IR
-            term.IR.UV = term.UV
-        if term.UV == None: # term is UVscale
-            self.UVscale = term.IR
-        else: # term has UV
-            term.UV.IR = term.IR
-        self._imap_remove(term) # remove term from imap
-        self._terms_remove(term) # remove from terms
-    def ascending(self):
-        terms = []
-        app = terms.append
-        term = self.IRscale
-        while term != None:
-            app(term)
-            term = term.UV
-        return terms
-    def descending(self):
-        terms = []
-        app = terms.append
-        term = self.UVscale
-        while term != None:
-            app(term)
-            term = term.IR
-        return terms
-    def _C4(self, gen, sgn = +1):
+        terms = self.terms
+        end_pos = len(terms)
+        pos = term.pos
+        if pos == end_pos - 1:
+            del terms[pos]
+        elif 0 <= pos <= end_pos - 1:
+            last_term = terms.pop()
+            last_term.pos = pos
+            terms[pos] = last_term
+            self.terms_adjust(last_term)
+        self.imap_del(term)
+        del self.mats[term.mat]
+    """
+    def pop(self):
+        top_term = self.terms[0]
+        self.remove(top_term)
+        return top_term"""
+    def C4(self, gen, sgn = +1):
+        mats = self.mats
+        imap = self.imap
+        gen_mat = gen.mat
         # collect terms to be transformed
-        terms = set() # start with empty set
-        for i in gen.mat.Xs | gen.mat.Zs: # supporting sites of gen
-            if i in self.imap: # if i registered in imap
-                terms.update(self.imap[i]) # add the related terms
-        # filter out non-commuting terms
-        terms = [term for term in terms if not is_commute(term.mat, gen.mat)]
-        for term in terms: # now the term will be transformed
-            self._imap_remove(term) # first remove from imap
+        relevant_terms = set() # start with empty set
+        for i in gen_mat.Xs | gen_mat.Zs: # supporting sites of gen
+            if i in imap: # if i registered in imap
+                relevant_terms.update(imap[i])
+        relevant_terms = [term for term in relevant_terms if not is_commute(term.mat, gen_mat)]
+        for term in relevant_terms:
+            # remove mat
+            self.imap_del(term)
+            del self.mats[term.mat]
             # C4 by idot with gen
             new_term = idot(term, gen)
-            # update mat & val only, without affecting UV-IR
+            # update mat & val only
             term.mat = new_term.mat
             term.val = sgn * new_term.val
-        # add new terms to imap
-        # NOTE: be done after all terms are transformed, otherwise
-        # the untransformed terms may block new terms to be added
-        # if they are the same
-        for term in terms:
-            self._imap_add(term)
+        # add new mats, NOT COMBINE TO ABOVE LOOP
+        for term in relevant_terms:
+            mats[term.mat] = term
+            self.imap_add(term)
     def forward(self, Rs):
         for R in Rs:
-            self._C4(R)
-        if len(Rs) > 0:
-            self.terms.sort()
+            self.C4(R)
     def backward(self, Rs):
         for R in reversed(Rs):
-            self._C4(R,-1)
-        if len(Rs) > 0:
-            self.terms.sort()
-
-### SBRG ###
+            self.C4(R,-1)
+""" SBRG:
+"""
 class SBRG:
     def __init__(self, model):
         self.tol = 1.e-8
         self.max_rate = 2.
-        self.L = model.L
-        self.H = Poly(model.terms)
+        self.bits = model.bits
+        self.H = Ham(model.terms)
         self.Hbdy = model.terms
         self.Hblk = []
         self.Heff = []
         self.EHM = []
-        self.phybits = set(range(self.L))
-        self.bit = 0
+        self.phybits = set(range(self.bits))
         self.trash = []
-    def _findR(self, mat):
+    def findRs(self, mat):
         if len(mat.Xs) > 0: # if X or Y exists, use it to pivot the rotation
-            self.bit = min(mat.Xs) # take first off-diag qubit
-            return [idot(Term(Pauli([],[self.bit])), Term(mat))]
+            pbit = min(mat.Xs) # take first off-diag qubit
+            return ([idot(Term(Mat([],[pbit])), Term(mat))], pbit)
         else: # if only Z
             if len(mat.Zs) > 1:
-                for self.bit in sorted(list(mat.Zs)): # find first Z in phybits
-                    if (self.bit in self.phybits):
-                        tmp = Term(Pauli([self.bit],[])) # set intermediate term
-                        return [idot(tmp, Term(mat)), idot(Term(Pauli([],[self.bit])), tmp)]
+                for pbit in sorted(list(mat.Zs)): # find first Z in phybits
+                    if (pbit in self.phybits):
+                        tmp = Term(Mat([pbit],[])) # set intermediate term
+                        return ([idot(tmp, Term(mat)), idot(Term(Mat([],[pbit])), tmp)], pbit)
             elif len(mat.Zs) == 1:
-                self.bit = min(mat.Zs)
-        return []
-    def _perturbation(self, H0, offdiag):
+                pbit = min(mat.Zs)
+        return ([], pbit)
+    def perturbation(self, H0, offdiag):
         h0 = H0.val # set h0
         min_prod = abs(h0)**2*self.tol # set minimal product
         # SiSj for commuting terms whose product val > min_prod
@@ -371,28 +270,28 @@ class SBRG:
         # add backward correction
         pert.append(Term(H0.mat, sum((term.val)**2 for term in offdiag)/(2*h0)))
         return pert
-    def _nextstep(self):
+    def nextstep(self):
         if len(self.phybits) == 0: # return if no physical bits
             return self
         # get leading energy scale
-        H0 = self.H.UVscale
+        H0 = self.H.terms[0]
         if abs(H0.val) == 0.: # if leading scale vanishes
             self.phybits = set() # quench physical space
             return self
         # find Clifford rotations
-        Rs = self._findR(H0.mat)
+        Rs, pbit = self.findRs(H0.mat)
         self.EHM.extend(Rs) # add to EHM
         self.H.forward(Rs) # apply to H
         # pick out offdiag terms
-        offdiag = [term for term in self.H.imap[self.bit] if self.bit in term.mat.Xs]
-        pert = self._perturbation(H0, offdiag) # 2nd order perturbation
+        offdiag = [term for term in self.H.imap[pbit] if pbit in term.mat.Xs]
+        pert = self.perturbation(H0, offdiag) # 2nd order perturbation
         for term in offdiag:
             self.H.remove(term) # remove off-diagonal terms
         self.H.extend(pert) # add perturbation to H
-        self.phybits.remove(self.bit) # reduce physical bits
+        self.phybits.remove(pbit) # reduce physical bits
         # remove identity terms in physical space
-        for term in list(self.H.imap[self.bit]):
-            if len(term.mat.Xs & self.phybits) + len(term.mat.Zs & self.phybits) == 0:
+        for term in list(self.H.imap[pbit]): # NOT REMOVE list(...)
+            if len((term.mat.Xs | term.mat.Zs) & self.phybits) == 0:
                 self.Heff.append(term)
                 self.H.remove(term)
     def flow(self, step = float('inf')):
@@ -400,13 +299,15 @@ class SBRG:
         # carry out RG flow
         stp_count = 0
         while (len(self.phybits) > 0 and stp_count < step):
-            self._nextstep()
+            self.nextstep()
             stp_count += 1
-
-### Model ###
+""" Model: defines Hilbert space and Hamiltonian
+Model.bits  :: int : num of bits
+Model.terms :: list : terms in the Hamiltonian
+"""
 class Model:
     def __init__(self):
-        self.L = 0
+        self.bits = 0
         self.terms = []
 def TFIsing(L, **para):
     # L - number of sites (assuming PBC)
@@ -421,13 +322,13 @@ def TFIsing(L, **para):
         alpha_K = para.get('alpha_K',1)
         alpha_h = para.get('alpha_h',1)
     model = Model()
-    model.L = L
+    model.bits = L
     # translate over the lattice by deque rotation
     H_append = model.terms.append
     rnd_beta = random.betavariate
     for i in range(L):
-        H_append(Term(Pauli({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
-        H_append(Term(Pauli({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
-        H_append(Term(Pauli({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
+        H_append(Term(Mat({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
+        H_append(Term(Mat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
+        H_append(Term(Mat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
     model.terms = [term for term in model.terms if abs(term.val) > 0]
     return model
