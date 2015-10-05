@@ -1,10 +1,10 @@
 import random
 from operator import attrgetter
 from itertools import combinations
+from copy import deepcopy
 """ Mat: tensor product of Pauli matrices
 Mat.Xs     :: set : collection of sites of X gates
 Mat.Zs     :: set : collection of sites of Z gates
-Mat.ipower :: int : number of overlap between Xs and Zs (num of Y gates)
 """
 class Mat:
     def __init__(self, *arg):
@@ -39,7 +39,7 @@ class Mat:
         elif l_arg == 0:
             self.Xs = set()
             self.Zs = set()
-        self.ipower = len(self.Xs & self.Zs)
+        self._ipower = None
         self._key = None
     def __repr__(self):
         return "<Xs:%s Zs:%s>" % (sorted(list(self.Xs)), sorted(list(self.Zs)))
@@ -51,6 +51,10 @@ class Mat:
         return self.Xs == other.Xs and self.Zs == other.Zs
     def __neq__(self, other):
         return self.Xs != other.Xs or self.Zs != other.Zs
+    def ipower(self): # number of overlap between Xs and Zs (num of Y gates)
+        if self._ipower is None:
+            self._ipower = len(self.Xs & self.Zs)
+        return self._ipower
 # commutativity check
 def is_commute(mat1, mat2):
     return (len(mat1.Xs & mat2.Zs) - len(mat1.Zs & mat2.Xs))%2 == 0
@@ -63,6 +67,7 @@ Term.val :: numeric : coefficient
 Term.pos :: int : my position in Hamiltonian.terms
 """
 class Term:
+    pos = 0
     def __init__(self, *arg):
         l_arg = len(arg)
         if l_arg == 2:
@@ -73,7 +78,6 @@ class Term:
         elif l_arg == 0:
             self.mat = Mat()
             self.val = 1.
-        self.pos = 0
     def __repr__(self):
         return "%s %s" % (self.val, self.mat)
 # dot product of two terms
@@ -81,7 +85,7 @@ def dot(term1, term2):
     mat1 = term1.mat
     mat2 = term2.mat
     mat = pdot(mat1, mat2)
-    n = mat1.ipower + mat2.ipower - mat.ipower
+    n = mat1.ipower() + mat2.ipower() - mat.ipower()
     n = n + 2*len(mat1.Zs & mat2.Xs)
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
@@ -90,7 +94,7 @@ def idot(term1, term2):
     mat1 = term1.mat
     mat2 = term2.mat
     mat = pdot(mat1, mat2)
-    n = mat1.ipower + mat2.ipower - mat.ipower
+    n = mat1.ipower() + mat2.ipower() - mat.ipower()
     n = n + 2*len(mat1.Zs & mat2.Xs) + 1
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
@@ -108,6 +112,10 @@ class Ham:
             self.extend(arg[0])
     def __repr__(self):
         return "%s" % self.terms
+    def __len__(self):
+        return len(self.terms)
+    def __iter__(self):
+        return iter(self.terms)
     def terms_push(self, term):
         pos = len(self.terms)
         term.pos = pos
@@ -135,13 +143,13 @@ class Ham:
             terms[pos] = this_term
     def terms_shiftIR(self, pos):
         terms = self.terms
-        end_pos = len(terms)
+        end_pos = len(terms) - 1
         this_term = terms[pos]
         child_pos = 2*pos + 1 # left child position
-        while child_pos < end_pos:
+        while child_pos <= end_pos:
             # Set child_pos to index of larger child.
             rchild_pos = child_pos + 1 # right child position
-            if rchild_pos < end_pos and abs(terms[child_pos].val) < abs(terms[rchild_pos].val):
+            if rchild_pos <= end_pos and abs(terms[child_pos].val) < abs(terms[rchild_pos].val):
                 child_pos = rchild_pos
             # Move the larger child up.
             child_term = terms[child_pos]
@@ -180,22 +188,17 @@ class Ham:
             self.push(term)
     def remove(self, term):
         terms = self.terms
-        end_pos = len(terms)
+        end_pos = len(terms) - 1
         pos = term.pos
-        if pos == end_pos - 1:
+        if pos == end_pos:
             del terms[pos]
-        elif 0 <= pos <= end_pos - 1:
+        elif 0 <= pos < end_pos:
             last_term = terms.pop()
             last_term.pos = pos
             terms[pos] = last_term
             self.terms_adjust(last_term)
         self.imap_del(term)
         del self.mats[term.mat]
-    """
-    def pop(self):
-        top_term = self.terms[0]
-        self.remove(top_term)
-        return top_term"""
     def C4(self, gen, sgn = +1):
         mats = self.mats
         imap = self.imap
@@ -225,30 +228,42 @@ class Ham:
     def backward(self, Rs):
         for R in reversed(Rs):
             self.C4(R,-1)
-""" SBRG:
+""" SBRG: doing RG, holding RG data and performing data analysis
+SBRG.tol      :: float : terms with energy < leading energy * tol will be truncated
+SBRG.max_rate :: float : each RG step allows at most (max_rate * num of off-diagonal terms) amount of new terms
+SBRG.bits     :: int : num of bits in the Hilbert space
+SBRG.phybits  :: set : a collection of physical bits
+SBRG.H        :: Ham : where the Hamiltonian is held and processed
+SBRG.Hbdy     :: list : keep the original terms passed in with the model
+SBRG.Hblk     :: list : holographic bulk Hamiltonian transformed by EHM
+SBRG.Heff     :: list : terms in the effective Hamiltonian
+SBRG.EHM      :: list : C4 transformations from beginning to end
+SBRG.taus     :: Ham : stabilizers
+SBRG.trash    :: list : hold the energy scales that has been truncated
 """
 class SBRG:
+    tol = 1.e-8
+    max_rate = 2.
     def __init__(self, model):
-        self.tol = 1.e-8
-        self.max_rate = 2.
         self.bits = model.bits
-        self.H = Ham(model.terms)
+        self.phybits = set(range(self.bits))
+        self.H = Ham(deepcopy(model.terms))
         self.Hbdy = model.terms
-        self.Hblk = []
+        self.Hblk = None
         self.Heff = []
         self.EHM = []
-        self.phybits = set(range(self.bits))
+        self.taus = None
         self.trash = []
     def findRs(self, mat):
         if len(mat.Xs) > 0: # if X or Y exists, use it to pivot the rotation
             pbit = min(mat.Xs) # take first off-diag qubit
-            return ([idot(Term(Mat([],[pbit])), Term(mat))], pbit)
+            return ([idot(Term(Mat(set(),{pbit})), Term(mat))], pbit)
         else: # if only Z
             if len(mat.Zs) > 1:
                 for pbit in sorted(list(mat.Zs)): # find first Z in phybits
                     if (pbit in self.phybits):
-                        tmp = Term(Mat([pbit],[])) # set intermediate term
-                        return ([idot(tmp, Term(mat)), idot(Term(Mat([],[pbit])), tmp)], pbit)
+                        tmp = Term(Mat({pbit},set())) # set intermediate term
+                        return ([idot(tmp, Term(mat)), idot(Term(Mat(set(),{pbit})), tmp)], pbit)
             elif len(mat.Zs) == 1:
                 pbit = min(mat.Zs)
         return ([], pbit)
@@ -301,6 +316,24 @@ class SBRG:
         while (len(self.phybits) > 0 and stp_count < step):
             self.nextstep()
             stp_count += 1
+    def make(self):
+        # reconstruct stabilizers
+        stabilizers = []
+        blkbits = set(range(self.bits))
+        for term in self.Heff:
+            if len(term.mat.Zs)==1:
+                stabilizers.append(deepcopy(term))
+                blkbits -= term.mat.Zs
+        stabilizers.extend(Term(Mat(set(),{i}),0) for i in blkbits)
+        self.taus = Ham(stabilizers)
+        self.taus.backward(self.EHM)
+        # reconstruct holographic bulk Hamiltonian
+        self.Hblk = Ham(deepcopy(self.Hbdy))
+        self.Hblk.forward(self.EHM)
+    def run(self):
+        self.flow()
+        self.make()
+        return self
 """ Model: defines Hilbert space and Hamiltonian
 Model.bits  :: int : num of bits
 Model.terms :: list : terms in the Hamiltonian
