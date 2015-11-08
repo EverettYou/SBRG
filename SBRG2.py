@@ -3,49 +3,20 @@ from operator import attrgetter
 from itertools import combinations
 from copy import deepcopy
 """ Mat: tensor product of Pauli matrices
-Mat.Xs     :: set : collection of sites of X gates
-Mat.Zs     :: set : collection of sites of Z gates
+Mat.Xs :: frozenset : collection of sites of X gates
+Mat.Zs :: frozenset : collection of sites of Z gates
 """
 class Mat:
-    def __init__(self, *arg):
-        l_arg = len(arg)
-        if l_arg == 2: 
-            self.Xs = set(arg[0])
-            self.Zs = set(arg[1])
-        elif l_arg == 1:
-            inds = arg[0]
-            self.Xs = set()
-            self.Zs = set()
-            if isinstance(inds, dict): # dict of inds rules
-                for (i, mu) in inds.items():
-                    if mu == 1:
-                        self.Xs.add(i)
-                    elif mu == 3:
-                        self.Zs.add(i)
-                    elif mu == 2:
-                        self.Xs.add(i)
-                        self.Zs.add(i)
-            elif isinstance(inds, (tuple, list)): # list of inds
-                for (i, mu) in enumerate(inds):
-                    if mu == 0:
-                        continue
-                    elif mu == 1:
-                        self.Xs.add(i)
-                    elif mu == 3:
-                        self.Zs.add(i)
-                    elif mu == 2:
-                        self.Xs.add(i)
-                        self.Zs.add(i)
-        elif l_arg == 0:
-            self.Xs = set()
-            self.Zs = set()
+    def __init__(self, Xs, Zs):
+        self.Xs = Xs
+        self.Zs = Zs
         self._ipower = None
         self._key = None
     def __repr__(self):
         return "<Xs:%s Zs:%s>" % (sorted(list(self.Xs)), sorted(list(self.Zs)))
     def __hash__(self):
         if self._key is None:
-            self._key = hash((tuple(self.Xs), tuple(self.Zs)))
+            self._key = hash((self.Xs, self.Zs))
         return self._key
     def __eq__(self, other):
         return self.Xs == other.Xs and self.Zs == other.Zs
@@ -55,6 +26,40 @@ class Mat:
         if self._ipower is None:
             self._ipower = len(self.Xs & self.Zs)
         return self._ipower
+# use mkMat to construct Mat
+def mkMat(*arg):
+    l_arg = len(arg)
+    if l_arg == 2:
+        return Mat(frozenset(arg[0]),frozenset(arg[1]))
+    elif l_arg == 1:
+        inds = arg[0]
+        Xs = set()
+        Zs = set()
+        if isinstance(inds, dict): # dict of inds rules
+            for (i, mu) in inds.items():
+                if mu == 1:
+                    Xs.add(i)
+                elif mu == 3:
+                    Zs.add(i)
+                elif mu == 2:
+                    Xs.add(i)
+                    Zs.add(i)
+        elif isinstance(inds, (tuple, list)): # list of inds
+            for (i, mu) in enumerate(inds):
+                if mu == 0:
+                    continue
+                elif mu == 1:
+                    Xs.add(i)
+                elif mu == 3:
+                    Zs.add(i)
+                elif mu == 2:
+                    Xs.add(i)
+                    Zs.add(i)
+        return Mat(frozenset(Xs), frozenset(Zs))
+    elif l_arg == 0:
+        return Mat(frozenset(), frozenset())
+    else:
+        raise TypeError('mkMat expected at most 2 arguments, got %s.' % l_arg)
 # commutativity check
 def is_commute(mat1, mat2):
     return (len(mat1.Xs & mat2.Zs) - len(mat1.Zs & mat2.Xs))%2 == 0
@@ -64,7 +69,7 @@ def pdot(mat1, mat2):
 """ Term: a Mat with coefficient and position
 Term.mat :: Mat : matrix of Pauli operator
 Term.val :: numeric : coefficient
-Term.pos :: int : my position in Hamiltonian.terms
+Term.pos :: int : my position in Ham.terms
 """
 class Term:
     pos = 0
@@ -76,7 +81,7 @@ class Term:
             self.mat = arg[0]
             self.val = 1.        
         elif l_arg == 0:
-            self.mat = Mat()
+            self.mat = mkMat()
             self.val = 1.
     def __repr__(self):
         return "%s %s" % (self.val, self.mat)
@@ -114,6 +119,8 @@ class Ham:
         return "%s" % self.terms
     def __len__(self):
         return len(self.terms)
+    def __bool__(self):
+        return bool(self.terms)
     def __iter__(self):
         return iter(self.terms)
     def terms_push(self, term):
@@ -190,6 +197,8 @@ class Ham:
         terms = self.terms
         end_pos = len(terms) - 1
         pos = term.pos
+        del self.mats[term.mat]
+        self.imap_del(term)
         if pos == end_pos:
             del terms[pos]
         elif 0 <= pos < end_pos:
@@ -197,8 +206,6 @@ class Ham:
             last_term.pos = pos
             terms[pos] = last_term
             self.terms_adjust(last_term)
-        self.imap_del(term)
-        del self.mats[term.mat]
     def C4(self, gen, sgn = +1):
         mats = self.mats
         imap = self.imap
@@ -211,8 +218,8 @@ class Ham:
         relevant_terms = [term for term in relevant_terms if not is_commute(term.mat, gen_mat)]
         for term in relevant_terms:
             # remove mat
+            del mats[term.mat]
             self.imap_del(term)
-            del self.mats[term.mat]
             # C4 by idot with gen
             new_term = idot(term, gen)
             # update mat & val only
@@ -257,13 +264,13 @@ class SBRG:
     def findRs(self, mat):
         if len(mat.Xs) > 0: # if X or Y exists, use it to pivot the rotation
             pbit = min(mat.Xs) # take first off-diag qubit
-            return ([idot(Term(Mat(set(),{pbit})), Term(mat))], pbit)
+            return ([idot(Term(mkMat(set(),{pbit})), Term(mat))], pbit)
         else: # if only Z
             if len(mat.Zs) > 1:
                 for pbit in sorted(list(mat.Zs)): # find first Z in phybits
                     if (pbit in self.phybits):
-                        tmp = Term(Mat({pbit},set())) # set intermediate term
-                        return ([idot(tmp, Term(mat)), idot(Term(Mat(set(),{pbit})), tmp)], pbit)
+                        tmp = Term(mkMat({pbit},set())) # set intermediate term
+                        return ([idot(tmp, Term(mat)), idot(Term(mkMat(set(),{pbit})), tmp)], pbit)
             elif len(mat.Zs) == 1:
                 pbit = min(mat.Zs)
         return ([], pbit)
@@ -286,7 +293,7 @@ class SBRG:
         pert.append(Term(H0.mat, sum((term.val)**2 for term in offdiag)/(2*h0)))
         return pert
     def nextstep(self):
-        if len(self.phybits) == 0: # return if no physical bits
+        if not (self.phybits and self.H): # return if no physical bits or no H
             return self
         # get leading energy scale
         H0 = self.H.terms[0]
@@ -306,14 +313,14 @@ class SBRG:
         self.phybits.remove(pbit) # reduce physical bits
         # remove identity terms in physical space
         for term in list(self.H.imap[pbit]): # NOT REMOVE list(...)
-            if len((term.mat.Xs | term.mat.Zs) & self.phybits) == 0:
+            if not ((term.mat.Xs | term.mat.Zs) & self.phybits):
                 self.Heff.append(term)
                 self.H.remove(term)
     def flow(self, step = float('inf')):
         step = min(step, len(self.phybits)) # adjust RG steps
         # carry out RG flow
         stp_count = 0
-        while (len(self.phybits) > 0 and stp_count < step):
+        while self.phybits and stp_count < step:
             self.nextstep()
             stp_count += 1
     def make(self):
@@ -321,10 +328,10 @@ class SBRG:
         stabilizers = []
         blkbits = set(range(self.bits))
         for term in self.Heff:
-            if len(term.mat.Zs)==1:
+            if len(term.mat.Zs) == 1:
                 stabilizers.append(deepcopy(term))
                 blkbits -= term.mat.Zs
-        stabilizers.extend(Term(Mat(set(),{i}),0) for i in blkbits)
+        stabilizers.extend(Term(mkMat(set(),{i}),0) for i in blkbits)
         self.taus = Ham(stabilizers)
         self.taus.backward(self.EHM)
         # reconstruct holographic bulk Hamiltonian
@@ -360,8 +367,24 @@ def TFIsing(L, **para):
     H_append = model.terms.append
     rnd_beta = random.betavariate
     for i in range(L):
-        H_append(Term(Mat({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
-        H_append(Term(Mat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
-        H_append(Term(Mat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
+        H_append(Term(mkMat({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
+        H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
+        H_append(Term(mkMat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
     model.terms = [term for term in model.terms if abs(term.val) > 0]
     return model
+
+# Toolbox 
+# I/O 
+# JSON pickle: export to communicate with Mathematica 
+import jsonpickle
+def export(filename, obj):
+    with open(filename + '.json', 'w') as outfile:
+        outfile.write(jsonpickle.encode(obj))
+import pickle
+# pickle: binary dump and load for python.
+def dump(filename, obj):
+    with open(filename + '.dat', 'bw') as outfile:
+        pickle.dump(obj, outfile)
+def load(filename):
+    with open(filename + '.dat', 'br') as infile:
+        return pickle.load(infile)
