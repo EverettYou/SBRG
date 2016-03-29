@@ -105,7 +105,7 @@ def idot(term1, term2):
     return Term(mat, s*term1.val*term2.val)
 """ Ham: a collection of Terms
 Ham.terms :: list : terms stored in binary heap structure
-Ham.mats  :: dict : mapping tat to term
+Ham.mats  :: dict : mapping mat to term
 Ham.imap  :: dict : mapping site to covering terms
 """
 class Ham:
@@ -235,16 +235,82 @@ class Ham:
     def backward(self, Rs):
         for R in reversed(Rs):
             self.C4(R,-1)
+""" Ent: calculate entanglement entropy of stablizers
+Ent.mat2is :: dict : mapping from mat to the supporting sites
+Ent.i2mats :: dict : mapping from site to the covering mat
+Ent.subsys :: set  : entanglement subsystem (a set of sites)
+Ent.shared :: set  : a set of mats shared between region and its complement
+"""
+import numpy as np
+from fortran_ext import z2rank
+class Ent:
+    def __init__(self, taus):
+        self.mat2is = {}
+        self.i2mats = {}
+        for term in taus:
+            mat = term.mat
+            sites = mat.Xs | mat.Zs
+            self.mat2is[term.mat] = sites
+            for i in sites:
+                try:
+                    self.i2mats[i].add(mat)
+                except:
+                    self.i2mats[i] = {mat}
+        self.clear()
+    def is_shared(self, mat):
+        sites = self.mat2is[mat]
+        return 0 < len(sites & self.subsys) < len(sites)
+    def update_shared(self, sites):
+        mats = set() # prepare to collect relevant mats
+        for i in sites: # scan over relevant sites
+            mats.update(self.i2mats[i]) # union into mats
+        for mat in mats:
+            if self.is_shared(mat): # if shared
+                self.shared.add(mat) # add to shared
+            else: # if not shared, discard if present in shared
+                self.shared.discard(mat)
+    def include(self, sites):
+        self.subsys.update(sites)
+        self.update_shared(sites)
+    def exclude(self, sites):
+        self.subsys.difference_update(sites)
+        self.update_shared(sites)
+    def clear(self):
+        self.subsys = set()
+        self.shared = set()
+    def entropy(self):
+        mats = [Mat(mat.Xs & self.subsys, mat.Zs & self.subsys) for mat in self.shared]
+        # mats is a list of Pauli monomials as generators
+        n = len(mats) # get num of projected stablizers
+        adj = np.zeros((n, n), dtype=int) # prepare empty adj mat
+        # construct adj mat
+        for k1 in range(n):
+            for k2 in range(k1 + 1, n):
+                if not is_commute(mats[k1], mats[k2]):
+                    adj[k1, k2] = adj[k2, k1] = 1
+        return z2rank(adj)/2
+# half-system-size bipartite entropy (averaged over translation)
+def bipartite_entropy(system):
+    ent = Ent(system.taus)
+    l_cut = 0
+    L = int(system.size/2)
+    S = 0
+    ent.include(range(l_cut, l_cut + L))
+    for l_cut in range(0, system.size):
+        S += ent.entropy()
+        ent.exclude({l_cut})
+        ent.include({(l_cut + L) % system.size})
+    return S/system.size
 """ SBRG: doing RG, holding RG data and performing data analysis
 SBRG.tol      :: float : terms with energy < leading energy * tol will be truncated
 SBRG.max_rate :: float : each RG step allows at most (max_rate * num of off-diagonal terms) amount of new terms
-SBRG.bits     :: int : num of bits in the Hilbert space
+SBRG.size     :: int : num of bits in the Hilbert space
 SBRG.phybits  :: set : a collection of physical bits
 SBRG.H        :: Ham : where the Hamiltonian is held and processed
 SBRG.Hbdy     :: list : keep the original terms passed in with the model
-SBRG.Hblk     :: list : holographic bulk Hamiltonian transformed by EHM
+SBRG.Hblk     :: list : holographic bulk Hamiltonian transformed by RCC
 SBRG.Heff     :: list : terms in the effective Hamiltonian
-SBRG.EHM      :: list : C4 transformations from beginning to end
+SBRG.RCC      :: list : C4 transformations from beginning to end
 SBRG.taus     :: Ham : stabilizers
 SBRG.trash    :: list : hold the energy scales that has been truncated
 """
@@ -252,13 +318,13 @@ class SBRG:
     tol = 1.e-8
     max_rate = 2.
     def __init__(self, model):
-        self.bits = model.bits
-        self.phybits = set(range(self.bits))
+        self.size = model.size
+        self.phybits = set(range(self.size))
         self.H = Ham(deepcopy(model.terms))
         self.Hbdy = model.terms
         self.Hblk = None
         self.Heff = []
-        self.EHM = []
+        self.RCC = []
         self.taus = None
         self.trash = []
     def findRs(self, mat):
@@ -290,19 +356,22 @@ class SBRG:
         H0inv = Term(H0.mat,1/h0)
         pert = [dot(H0inv,term) for term in SiSj]
         # add backward correction
-        pert.append(Term(H0.mat, sum((term.val)**2 for term in offdiag)/(2*h0)))
+        var = sum((term.val)**2 for term in offdiag) # also used in error estimate
+        pert.append(Term(H0.mat, var/(2*h0)))
         return pert
     def nextstep(self):
         if not (self.phybits and self.H): # return if no physical bits or no H
+            self.phybits = set() # clear physical bits
             return self
         # get leading energy scale
         H0 = self.H.terms[0]
-        if abs(H0.val) == 0.: # if leading scale vanishes
+        h0 = H0.val
+        if not abs(h0): # if leading scale vanishes
             self.phybits = set() # quench physical space
             return self
         # find Clifford rotations
         Rs, pbit = self.findRs(H0.mat)
-        self.EHM.extend(Rs) # add to EHM
+        self.RCC.extend(Rs) # add to RCC
         self.H.forward(Rs) # apply to H
         # pick out offdiag terms
         offdiag = [term for term in self.H.imap[pbit] if pbit in term.mat.Xs]
@@ -316,6 +385,7 @@ class SBRG:
             if not ((term.mat.Xs | term.mat.Zs) & self.phybits):
                 self.Heff.append(term)
                 self.H.remove(term)
+        return (Term(H0.mat,h0), Rs, offdiag)
     def flow(self, step = float('inf')):
         step = min(step, len(self.phybits)) # adjust RG steps
         # carry out RG flow
@@ -326,29 +396,40 @@ class SBRG:
     def make(self):
         # reconstruct stabilizers
         stabilizers = []
-        blkbits = set(range(self.bits))
+        blkbits = set(range(self.size))
         for term in self.Heff:
             if len(term.mat.Zs) == 1:
                 stabilizers.append(deepcopy(term))
                 blkbits -= term.mat.Zs
         stabilizers.extend(Term(mkMat(set(),{i}),0) for i in blkbits)
         self.taus = Ham(stabilizers)
-        self.taus.backward(self.EHM)
+        self.taus.backward(self.RCC)
         # reconstruct holographic bulk Hamiltonian
         self.Hblk = Ham(deepcopy(self.Hbdy))
-        self.Hblk.forward(self.EHM)
+        self.Hblk.forward(self.RCC)
     def run(self):
         self.flow()
         self.make()
         return self
+    def correlate(self, terms):
+        ops = Ham(terms)
+        ops.forward(self.RCC)
+        cor = {}
+        L = self.size
+        for (i,j) in combinations(range(len(ops)),2):
+            if len(ops.terms[i].mat.Xs ^ ops.terms[j].mat.Xs) == 0:
+                d = int(abs((j - i + L/2)%L - L/2))
+                cor[d] = cor.get(d,0) + 1
+        return cor
 """ Model: defines Hilbert space and Hamiltonian
-Model.bits  :: int : num of bits
+Model.size  :: int : num of bits
 Model.terms :: list : terms in the Hamiltonian
 """
 class Model:
     def __init__(self):
-        self.bits = 0
+        self.size = 0
         self.terms = []
+# quantum Ising model
 def TFIsing(L, **para):
     # L - number of sites (assuming PBC)
     # model - a dict of model parameters
@@ -362,7 +443,7 @@ def TFIsing(L, **para):
         alpha_K = para.get('alpha_K',1)
         alpha_h = para.get('alpha_h',1)
     model = Model()
-    model.bits = L
+    model.size = L
     # translate over the lattice by deque rotation
     H_append = model.terms.append
     rnd_beta = random.betavariate
@@ -370,6 +451,30 @@ def TFIsing(L, **para):
         H_append(Term(mkMat({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
         H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
         H_append(Term(mkMat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
+    model.terms = [term for term in model.terms if abs(term.val) > 0]
+    return model
+# XYZ model
+def XYZ(L, **para):
+    # L - number of sites (assuming PBC)
+    # model - a dict of model parameters
+    try: # set parameter alpha
+        alpha = para['alpha']
+        alpha_X = alpha
+        alpha_Y = alpha
+        alpha_Z = alpha
+    except:
+        alpha_X = para.get('alpha_x',1)
+        alpha_Y = para.get('alpha_y',1)
+        alpha_Z = para.get('alpha_z',1)
+    model = Model()
+    model.size = L
+    # translate over the lattice by deque rotation
+    H_append = model.terms.append
+    rnd_beta = random.betavariate
+    for i in range(L):
+        H_append(Term(mkMat({i: 1, (i+1)%L: 1}), para['Jx']*rnd_beta(alpha_X, 1)))
+        H_append(Term(mkMat({i: 2, (i+1)%L: 2}), para['Jy']*rnd_beta(alpha_Y, 1)))
+        H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['Jz']*rnd_beta(alpha_Z, 1)))
     model.terms = [term for term in model.terms if abs(term.val) > 0]
     return model
 
@@ -380,6 +485,8 @@ import jsonpickle
 def export(filename, obj):
     with open(filename + '.json', 'w') as outfile:
         outfile.write(jsonpickle.encode(obj))
+def export_Ham(filename, ham):
+    export(filename, [[term.val,[list(term.mat.Xs),list(term.mat.Zs)]] for term in ham])
 import pickle
 # pickle: binary dump and load for python.
 def dump(filename, obj):
