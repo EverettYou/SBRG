@@ -72,7 +72,6 @@ Term.val :: numeric : coefficient
 Term.pos :: int : my position in Ham.terms
 """
 class Term:
-    pos = 0
     def __init__(self, *arg):
         l_arg = len(arg)
         if l_arg == 2:
@@ -83,6 +82,8 @@ class Term:
         elif l_arg == 0:
             self.mat = mkMat()
             self.val = 1.
+        self.pos = 0
+        self.Maj = set()
     def __repr__(self):
         return "%s %s" % (self.val, self.mat)
 # dot product of two terms
@@ -93,7 +94,9 @@ def dot(term1, term2):
     n = mat1.ipower() + mat2.ipower() - mat.ipower()
     n = n + 2*len(mat1.Zs & mat2.Xs)
     s = (-1)**(n/2)
-    return Term(mat, s*term1.val*term2.val)
+    term = Term(mat, s*term1.val*term2.val)
+    term.Maj = term1.Maj ^ term2.Maj
+    return term
 # dot product of two terms (times additional i)
 def idot(term1, term2):
     mat1 = term1.mat
@@ -103,6 +106,23 @@ def idot(term1, term2):
     n = n + 2*len(mat1.Zs & mat2.Xs) + 1
     s = (-1)**(n/2)
     return Term(mat, s*term1.val*term2.val)
+# get Majorana configuration
+def getMaj(mat):
+    Maj = set()
+    xs = sorted(mat.Xs)
+    for i, j in zip(xs[0::2], xs[1::2]):
+        Maj.update(range(2*i, 2*j))
+    Maj.symmetric_difference_update(2*z for z in mat.Zs)
+    Maj.symmetric_difference_update(2*z+1 for z in mat.Zs)
+    Maj.symmetric_difference_update(2*x for x in mat.Xs)
+    return Maj
+# count number of Majorana operators in term
+def Majorana_count(L, term):
+# L - system size (qubits), term - Term
+    count = len(term.Maj)
+    if count > L:
+        count = 2*L - count
+    return count
 """ Ham: a collection of Terms
 Ham.terms :: list : terms stored in binary heap structure
 Ham.mats  :: dict : mapping mat to term
@@ -358,6 +378,8 @@ class SBRG:
         # add backward correction
         var = sum((term.val)**2 for term in offdiag) # also used in error estimate
         pert.append(Term(H0.mat, var/(2*h0)))
+        # truncate by Majorana count
+        pert = [term for term in pert if Majorana_count(self.size, term) <= 4]
         return pert
     def nextstep(self):
         if not (self.phybits and self.H): # return if no physical bits or no H
@@ -476,6 +498,8 @@ def XYZ(L, **para):
         H_append(Term(mkMat({i: 2, (i+1)%L: 2}), para['Jy']*rnd_beta(alpha_Y, 1)))
         H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['Jz']*rnd_beta(alpha_Z, 1)))
     model.terms = [term for term in model.terms if abs(term.val) > 0]
+    for term in model.terms:
+        term.Maj = getMaj(term.mat)
     return model
 
 # Toolbox 
