@@ -374,6 +374,7 @@ class SBRG:
             SiSj = SiSj[-max_len:]
         # multiply by H0 inverse
         H0inv = Term(H0.mat,1/h0)
+        H0inv.Maj = H0.Maj
         pert = [dot(H0inv,term) for term in SiSj]
         # add backward correction
         var = sum((term.val)**2 for term in offdiag) # also used in error estimate
