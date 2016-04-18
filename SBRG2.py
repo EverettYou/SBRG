@@ -337,6 +337,7 @@ SBRG.trash    :: list : hold the energy scales that has been truncated
 class SBRG:
     tol = 1.e-8
     max_rate = 2.
+    max_order = 1000
     def __init__(self, model):
         self.size = model.size
         self.phybits = set(range(self.size))
@@ -362,13 +363,13 @@ class SBRG:
         return ([], pbit)
     def perturbation(self, H0, offdiag):
         h0 = H0.val # set h0
-        min_prod = abs(h0)**2*self.tol # set minimal product
+        min_prod = abs(h0)**2*SBRG.tol # set minimal product
         # SiSj for commuting terms whose product val > min_prod
         SiSj = [dot(term1, term2) for (term1, term2) in combinations(offdiag, 2)
                 if is_commute(term1.mat,term2.mat) and abs(term1.val*term2.val) > min_prod]
         SiSj.sort(key=attrgetter('val')) # sort by val
         # term number truncation
-        max_len = round(self.max_rate*len(offdiag))
+        max_len = round(SBRG.max_rate*len(offdiag))
         if len(SiSj) > max_len:
             self.trash.extend([term.val/h0 for term in SiSj[:-max_len]])
             SiSj = SiSj[-max_len:]
@@ -380,7 +381,7 @@ class SBRG:
         var = sum((term.val)**2 for term in offdiag) # also used in error estimate
         pert.append(Term(H0.mat, var/(2*h0)))
         # truncate by Majorana count
-        pert = [term for term in pert if Majorana_count(self.size, term) <= 4]
+        pert = [term for term in pert if Majorana_count(self.size, term) <= SBRG.max_order]
         return pert
     def nextstep(self):
         if not (self.phybits and self.H): # return if no physical bits or no H
@@ -475,6 +476,8 @@ def TFIsing(L, **para):
         H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
         H_append(Term(mkMat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
     model.terms = [term for term in model.terms if abs(term.val) > 0]
+    for term in model.terms:
+        term.Maj = getMaj(term.mat)
     return model
 # XYZ model
 def XYZ(L, **para):
