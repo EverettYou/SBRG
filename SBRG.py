@@ -1,373 +1,454 @@
-# dict of single-bit dot product rules
-DOT_RULES = {(0,0): (0,0),
-             (0,1): (1,0),
-             (0,2): (2,0),
-             (0,3): (3,0),
-             (1,0): (1,0),
-             (2,0): (2,0),
-             (3,0): (3,0),
-             (1,1): (0,0),
-             (2,2): (0,0),
-             (3,3): (0,0),
-             (1,2): (3,1),
-             (2,3): (1,1),
-             (3,1): (2,1),
-             (3,2): (1,-1),
-             (2,1): (3,-1),
-             (1,3): (2,-1)}
-# merge dicts of two matrices
-def merge(mat1_get, mat2_get, mat1_keys, mat2_keys):
-    return [[i, mat1_get(i,0), mat2_get(i,0)] for i in mat1_keys | mat2_keys]
-# carry out DOT_RULES over index pairs
-def dotover(merged):
-    for triple in merged:
-        triple[1], triple[2] = DOT_RULES[(triple[1], triple[2])]
-    return merged
-# get overall exponent
-def powofi(merged, n0 = 0):
-    return (sum(triple[2] for triple in merged) + n0)%4
-# collect new mat
-def newmat(merged):
-    return {i: mu for [i, mu, n] in merged if mu != 0}
-# dot product
-def dot(term1, term2, n0 = 0):
-    merged = merge(term1[0].get, term2[0].get, term1[0].keys(), term2[0].keys())
-    dotover(merged)
-    return [newmat(merged), term1[1]*term2[1]*(-1)**(powofi(merged, n0)/2)]
-# find rotation to diagonalize mat0 to the current bit site i_now
-def find_rotation(mat0, i_now):
-    # i_12 - site of first 1 or 2, i_3 - site of last 3
-    i_12 = -1 # initialize to -1 (unphysical)
-    i_3 = -1 # initialize to -1 (unphysical)
-    count_3 = 0 # count the num of 3
-    for (i, mu) in mat0.items():
-        if mu == 3: # if find 3
-            count_3 += 1
-            if i >= i_now: # if after i_now
-                i_3 = i # update i_3
-        elif i >= i_now and (mu == 1 or mu == 2): # if find first 1 or 2 after i_now
-            i_12 = i # set i_12 and break
-            break
-    Us = []
-    if i_12 >= 0: # if 1 or 2 exist, use it as pivot of rotation
-        # require a C4 rotation
-        Us.append(['C4', dot([{i_12: 3},1], [mat0,1], 1)])
-        if i_12 != i_now: # if i_12 not at the required site
-            Us.append(['SWAP',[i_now, i_12]]) # additional SWAP required
-    elif i_3 >= 0: # if no 1 or 2, but 3 exist
-        if count_3 > 1: # if there are more than one 3
-            # require double C4
-            if mat0.get(i_now,0) == 3: # if i_now sits on a site of 3
-                i_3 = i_now # switch i_3 to that, so as to avoid additional SWAP
-            Us.append(['C4', dot([{i_3: 1},1], [mat0,1], 1)])
-            Us.append(['C4', [{i_3: 2}, -1]])       
-        if i_3 != i_now: # if i_3 not at the reqired site
-            Us.append(['SWAP',[i_now, i_3]]) # additional SWAP required 
-    return Us
-# single unitary transform
-# C4 transformation
-def C4(mat_C4, val_C4, H):
-    mat_C4_get = mat_C4.get
-    mat_C4_keys = mat_C4.keys()
-    # if non-commuting, do the dot product, otherwise do nothing
-    for term in H:
-        mat_keys = term[0].keys()
-        if mat_C4_keys & mat_keys: # if keys intersects
-            # merge keys
-            mat_get = term[0].get
-            merged = merge(mat_get, mat_C4_get, mat_keys, mat_C4_keys)
-            if sum(1 for [i, mu1, mu2] in merged
-                   if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2:
-                # if not commute, perform C4
-                dotover(merged)
-                term[0] = newmat(merged)
-                term[1] *= val_C4*(-1)**(powofi(merged, 1)/2) 
-# SWAP gate
-def swap(i0, i1, H):
-    for term in H:
-        mat_keys = term[0].keys()
-        if i0 in mat_keys: # i0 intersects
-            if i1 in mat_keys: # both i0, i1 intersect
-                term[0][i0], term[0][i1] = term[0][i1], term[0][i0]
-            else: # only i0 intersects
-                term[0][i1] = term[0].pop(i0) # update i0 -> i1
-        else: # i0 not there
-            if i1 in mat_keys: # only i1 intersects
-                term[0][i0] = term[0].pop(i1) # update i1->i0
-# perform unitary transforms Us in series to H
-def unitary_fd(Us, H):
-    for [gate, para] in Us:
-        if gate == 'C4': # C4 gate, para = C4 generator
-            C4(para[0], para[1], H)   
-        elif gate == 'SWAP': # SWAP gate, para = SWAP positions
-            swap(para[0], para[1], H)
-def unitary_bk(Us, H):
-    for [gate, para] in reversed(Us): # access Us in reversed order
-        if gate == 'C4': # C4 gate, para = C4 generator
-            C4(para[0], -para[1], H) # C4 rotation in opposite direction
-        elif gate == 'SWAP': # SWAP gate, para = SWAP positions
-            swap(para[0], para[1], H)
-# key functions for sorting
-def term_mat(term):
-    return tuple(term[0].items())
-def term_val(term):
-    return abs(term[1])
-# cal perturbation Hamiltonian
+import random
+from operator import attrgetter
 from itertools import combinations
-def perturbation(H_offdiag, h0, i_now, min_scale, max_rate, trash_add):
-    # preselect pair of terms above min_scale
-    min_prod = abs(h0*min_scale)
-    H_prod = [[merge(term1[0].get, term2[0].get, term1[0].keys(), term2[0].keys()),
-               term1[1]*term2[1]/h0] 
-              for (term1, term2) in combinations(H_offdiag, 2)
-              if abs(term1[1]*term2[1]) > min_prod]
-    # quench terms from anticommuting products
-    for term in H_prod:
-        if sum(1 for [i, mu1, mu2] in term[0]
-               if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2: # if anticommute
-            term[1] = 0 # quench the coefficient
-    # sort by val
-    H_prod = [[merged, val] for [merged, val] 
-              in H_prod if abs(val) > min_scale]
-    H_prod.sort(key=term_val)
-    # term number truncation
-    max_len = round(max_rate*len(H_offdiag))
-    if len(H_prod) > max_len:
-        trash_add([val for [merged, val] in H_prod[:-max_len]])
-        H_prod = H_prod[-max_len:]
-    # carryout the matrix product
-    for term in H_prod:
-        dotover(term[0])
-        term[1] *= (-1)**(powofi(term[0])/2)
-        term[0] = newmat(term[0])
-        # apply H0 dot product
-        mu_now = term[0].get(i_now,0)
-        if mu_now == 0:
-            term[0][i_now] = 3
-        else: # mu_now = 3
-            del term[0][i_now]
-    # the backward correction to the leading energy scale
-    H_prod.append([{i_now: 3}, sum(val**2 for [mat, val] in H_offdiag)/(2*h0)])
-    return H_prod
-# check if a matrix is identity starting from i_now position
-def is_iden(mat, i_now):
-    return max(mat.keys()) <= i_now
-# check if mat is supported in both A and B
-def is_shared(mat, A, B):
-    return any(i in A for i in mat.keys()) and any(i in B for i in mat.keys())
-# check if mat is off-diagonal
-def is_offdiag(mat):
-    return any(mu == 1 or mu == 2 for mu in mat.values())
-# return the span of Pauli operator 
-# (head to tail length, not the number of supports)
-def mat_span(mat,L):
-    mus = list(mat.keys())
-    mus.sort()
-    diff = [snd-fst for fst, snd in zip(mus, mus[1:] + [mus[0]+L])]
-    i = diff.index(max(diff))
-    mu0 = mus[(i+1)%len(mus)]
-    mu1 = mus[i]
-    return (mu1-mu0)%L
-# find rank of a Pauli group
+from copy import deepcopy
+''' Mat: tensor product of Pauli matrices
+Mat.Xs :: frozenset : collection of sites of X gates
+Mat.Zs :: frozenset : collection of sites of Z gates
+'''
+class Mat:
+    def __init__(self, Xs, Zs):
+        self.Xs = Xs
+        self.Zs = Zs
+        self._ipower = None
+        self._key = None
+    def __repr__(self):
+        return '<Xs:%s Zs:%s>' % (sorted(list(self.Xs)), sorted(list(self.Zs)))
+    def __hash__(self):
+        if self._key is None:
+            self._key = hash((self.Xs, self.Zs))
+        return self._key
+    def __eq__(self, other):
+        return self.Xs == other.Xs and self.Zs == other.Zs
+    def __neq__(self, other):
+        return self.Xs != other.Xs or self.Zs != other.Zs
+    def ipower(self): # number of overlap between Xs and Zs (num of Y gates)
+        if self._ipower is None: # if ipower has not been calculated
+            self._ipower = len(self.Xs & self.Zs)
+            # once calculated the result is stored in self._ipower
+        return self._ipower
+# use mkMat to construct Mat
+def mkMat(*arg):
+    l_arg = len(arg)
+    if l_arg == 2:
+        return Mat(frozenset(arg[0]),frozenset(arg[1]))
+    elif l_arg == 1:
+        inds = arg[0]
+        Xs = set()
+        Zs = set()
+        if isinstance(inds, dict): # dict of inds rules
+        # example: mkMat({i:mu, ...})
+            for (i, mu) in inds.items():
+                if mu == 1:
+                    Xs.add(i)
+                elif mu == 3:
+                    Zs.add(i)
+                elif mu == 2:
+                    Xs.add(i)
+                    Zs.add(i)
+        elif isinstance(inds, (tuple, list)): # list of inds
+        # example: mkMat([mu0, mu1, mu2, ...])
+            for (i, mu) in enumerate(inds):
+                if mu == 0:
+                    continue
+                elif mu == 1:
+                    Xs.add(i)
+                elif mu == 3:
+                    Zs.add(i)
+                elif mu == 2:
+                    Xs.add(i)
+                    Zs.add(i)
+        return Mat(frozenset(Xs), frozenset(Zs))
+    elif l_arg == 0: # empty Mat by mkMat()
+        return Mat(frozenset(), frozenset())
+    else:
+        raise TypeError('mkMat expected at most 2 arguments, got %s.' % l_arg)
+# commutativity check
+def is_commute(mat1, mat2):
+    return (len(mat1.Xs & mat2.Zs) - len(mat1.Zs & mat2.Xs))%2 == 0
+# merging Pauli indices (coefficient not determined here)
+def pdot(mat1, mat2):
+    return Mat(mat1.Xs ^ mat2.Xs, mat1.Zs ^ mat2.Zs)
+''' Term: a Mat with coefficient and position
+Term.mat :: Mat : matrix of Pauli operator
+Term.val :: numeric : coefficient
+Term.pos :: int : my position in Ham.terms
+'''
+class Term:
+    def __init__(self, *arg):
+        l_arg = len(arg)
+        if l_arg == 2:
+            self.mat, self.val = arg
+        elif l_arg == 1:
+            self.mat = arg[0]
+            self.val = 1.        
+        elif l_arg == 0:
+            self.mat = mkMat()
+            self.val = 1.
+        self.pos = 0
+    def __repr__(self):
+        return '%s %s' % (self.val, self.mat)
+# dot product of two terms
+def dot(term1, term2):
+    mat1 = term1.mat
+    mat2 = term2.mat
+    mat = pdot(mat1, mat2)
+    n = mat1.ipower() + mat2.ipower() - mat.ipower()
+    n = n + 2*len(mat1.Zs & mat2.Xs)
+    s = (-1)**(n/2)
+    term = Term(mat, s*term1.val*term2.val)
+    return term
+# dot product of two terms (times additional i)
+def idot(term1, term2):
+    mat1 = term1.mat
+    mat2 = term2.mat
+    mat = pdot(mat1, mat2)
+    n = mat1.ipower() + mat2.ipower() - mat.ipower()
+    n = n + 2*len(mat1.Zs & mat2.Xs) + 1
+    s = (-1)**(n/2)
+    return Term(mat, s*term1.val*term2.val)
+''' Ham: a collection of Terms
+Ham.terms :: list : terms stored in binary heap structure
+Ham.mats  :: dict : mapping mat to term
+Ham.imap  :: dict : mapping site to covering terms
+'''
+class Ham:
+    def __init__(self, *arg):
+        self.terms = []
+        self.mats = {}
+        self.imap = {}
+        if len(arg) == 1:
+            self.extend(arg[0])
+    def __repr__(self):
+        return '%s' % self.terms
+    def __len__(self):
+        return len(self.terms)
+    def __bool__(self):
+        return bool(self.terms)
+    def __iter__(self):
+        return iter(self.terms)
+    # add a term to the heap tree (self.terms)
+    def terms_push(self, term):
+        pos = len(self.terms) # set pos to the end of self.terms
+        term.pos = pos
+        self.terms.append(term) # append from IR end
+        self.terms_shiftUV(pos) # shifted to UV
+    # adjust the position of a term in the heap tree
+    def terms_adjust(self, term):
+        pos = term.pos
+        self.terms_shiftUV(pos)
+        self.terms_shiftIR(pos)
+    # shifting a term indexed by pos in the heap tree towards UV (upward)
+    def terms_shiftUV(self, pos):
+        terms = self.terms
+        this_term = terms[pos]
+        # Follow the path to the root, moving parents down until fits.
+        while pos > 0:
+            parent_pos = (pos - 1) >> 1
+            parent_term = terms[parent_pos]
+            if abs(this_term.val) > abs(parent_term.val):
+                parent_term.pos = pos
+                terms[pos] = parent_term
+                pos = parent_pos
+                continue
+            break
+        if pos != this_term.pos: # if pos is new
+            this_term.pos = pos
+            terms[pos] = this_term
+    # shifting a term indexed by pos in the heap tree towards IR (downward)
+    def terms_shiftIR(self, pos):
+        terms = self.terms
+        end_pos = len(terms) - 1
+        this_term = terms[pos]
+        child_pos = 2*pos + 1 # left child position
+        while child_pos <= end_pos:
+            # Set child_pos to index of larger child.
+            rchild_pos = child_pos + 1 # right child position
+            if rchild_pos <= end_pos and abs(terms[child_pos].val) < abs(terms[rchild_pos].val):
+                child_pos = rchild_pos
+            # Move the larger child up.
+            child_term = terms[child_pos]
+            if abs(this_term.val) < abs(child_term.val):
+                child_term.pos = pos
+                terms[pos] = child_term
+                pos = child_pos
+                child_pos = 2*pos + 1 # left child position
+                continue
+            break
+        if pos != this_term.pos: # if pos is new
+            this_term.pos = pos
+            terms[pos] = this_term
+    def imap_add(self, term):
+        mat = term.mat
+        for i in mat.Xs | mat.Zs:
+            try:
+                self.imap[i].add(term)
+            except:
+                self.imap[i] = {term}
+    def imap_del(self, term):
+        mat = term.mat
+        for i in mat.Xs | mat.Zs:
+            self.imap[i].remove(term)
+    # push a term into the Hamiltonian
+    def push(self, term):
+        if term.mat in self.mats: # if mat already exist
+            old_term = self.mats[term.mat]
+            old_term.val += term.val
+            self.terms_adjust(old_term)
+        else: # if mat is new
+            self.terms_push(term)
+            self.mats[term.mat] = term
+            self.imap_add(term)
+    # extend Hamiltonian by adding terms (given by iterator)
+    def extend(self, terms):
+        for term in terms:
+            self.push(term)
+    # remove a term from the Hamiltonian
+    def remove(self, term):
+        terms = self.terms
+        end_pos = len(terms) - 1
+        pos = term.pos
+        del self.mats[term.mat]
+        self.imap_del(term)
+        if pos == end_pos:
+            del terms[pos]
+        elif 0 <= pos < end_pos:
+            last_term = terms.pop()
+            last_term.pos = pos
+            terms[pos] = last_term
+            self.terms_adjust(last_term)
+    # perform C4 rotation generated by sgn*gen to Hamiltonian
+    def C4(self, gen, sgn = +1):
+        mats = self.mats
+        imap = self.imap
+        gen_mat = gen.mat
+        # collect terms to be transformed
+        relevant_terms = set() # start with empty set
+        for i in gen_mat.Xs | gen_mat.Zs: # supporting sites of gen
+            if i in imap: # if i registered in imap
+                relevant_terms.update(imap[i])
+        relevant_terms = [term for term in relevant_terms if not is_commute(term.mat, gen_mat)]
+        for term in relevant_terms:
+            # remove mat
+            del mats[term.mat]
+            self.imap_del(term)
+            # C4 by idot with gen
+            new_term = idot(term, gen)
+            # update mat & val only
+            term.mat = new_term.mat
+            term.val = sgn * new_term.val
+        # add new mats, NOT COMBINE TO ABOVE LOOP
+        for term in relevant_terms:
+            mats[term.mat] = term
+            self.imap_add(term)
+    # perform a series of C4 rotations Rs forward
+    def forward(self, Rs):
+        for R in Rs:
+            self.C4(R)
+    # perform a series of C4 rotations Rs backward
+    def backward(self, Rs):
+        for R in reversed(Rs):
+            self.C4(R,-1)
+''' Ent: calculate entanglement entropy of stablizers
+Ent.mat2is :: dict : mapping from mat to the supporting sites
+Ent.i2mats :: dict : mapping from site to the covering mat
+Ent.subsys :: set  : entanglement subsystem (a set of sites)
+Ent.shared :: set  : a set of mats shared between region and its complement
+'''
 import numpy as np
 from fortran_ext import z2rank
-def pauli_rank(mats):
-    # mats is a list of Pauli monomials as generators
-    n = len(mats) # get num of projected stablizers
-    adj = np.zeros((n, n), dtype=int) # prepare empty adj mat
-    # construct adj mat
-    for k1 in range(n):
-        mat1_get = mats[k1].get
-        mat1_keys = mats[k1].keys()
-        for k2 in range(k1 + 1, n):
-            mat2_keys = mats[k2].keys()
-            if mat1_keys & mat2_keys: # if keys intersect
-                mat2_get = mats[k2].get
-                merged = merge(mat1_get, mat2_get, mat1_keys, mat2_keys)
-                if sum(1 for [i, mu1, mu2] in merged 
-                       if mu1 != 0 and mu2 != 0 and mu1 != mu2)%2:
-                    # if not commute, set adj to 1
+class Ent:
+    def __init__(self, taus):
+        self.mat2is = {}
+        self.i2mats = {}
+        for term in taus:
+            mat = term.mat
+            sites = mat.Xs | mat.Zs
+            self.mat2is[term.mat] = sites
+            for i in sites:
+                try:
+                    self.i2mats[i].add(mat)
+                except:
+                    self.i2mats[i] = {mat}
+        self.clear()
+    def is_shared(self, mat):
+        sites = self.mat2is[mat]
+        return 0 < len(sites & self.subsys) < len(sites)
+    def update_shared(self, sites):
+        mats = set() # prepare to collect relevant mats
+        for i in sites: # scan over relevant sites
+            mats.update(self.i2mats[i]) # union into mats
+        for mat in mats:
+            if self.is_shared(mat): # if shared
+                self.shared.add(mat) # add to shared
+            else: # if not shared, discard if present in shared
+                self.shared.discard(mat)
+    # include sites to entanglement region
+    def include(self, sites):
+        self.subsys.update(sites)
+        self.update_shared(sites)
+    # exclude sites from entanglement region
+    def exclude(self, sites):
+        self.subsys.difference_update(sites)
+        self.update_shared(sites)
+    # clear
+    def clear(self):
+        self.subsys = set()
+        self.shared = set()
+    # return entropy of the entanglement region
+    def entropy(self):
+        mats = [Mat(mat.Xs & self.subsys, mat.Zs & self.subsys) for mat in self.shared]
+        # mats is a list of Pauli monomials as generators
+        n = len(mats) # get num of projected stablizers
+        adj = np.zeros((n, n), dtype=int) # prepare empty adj mat
+        # construct adj mat
+        for k1 in range(n):
+            for k2 in range(k1 + 1, n):
+                if not is_commute(mats[k1], mats[k2]):
                     adj[k1, k2] = adj[k2, k1] = 1
-    return z2rank(adj) # return Z2 rank of adj
-# collect 1D entropy data
-# by highly efficient stabilizer dipatching
-from math import ceil, floor
-def entropy1D(system, Lmin = 1, Lmax = float('inf'), dL = 1):
-    N = system.N # get system size
-    # legalize the input parameters
-    Lmin = max(Lmin, 1)
-    Lmax = min(Lmax, floor(N/2))
-    dL = max(dL, 1)
-    # list of projected stabilizers
-    fractions = []
-    ind_fw = 0
-    ind_bk = 0
-    # {cut: index to fractions,...}, where cut = (1st site, length)
-    stabilizer_dict = {}
-    # run through stablizers
-    for mat, val in system.taus:
-        # decompose to a list of single-bit gates
-        gs = sorted(mat.items())
-        n = len(gs) # num of single-bit gates
-        # sites that the gates act on
-        sites = [i for i, mu in gs] 
-        sites.append(sites[0] + N)
-        # regions of entanglement cuts
-        regions = [(sites[i], sites[i + 1]) for i in range(n)]
-        for l in range(n - 1):
-            regions_l = regions[l]
-            for r in range(l + 1, n):
-                regions_r = regions[r]
-                to_push_fw = True
-                to_push_bk = True
-                for cut_l in range(*regions_l):
-                    a, b = regions_r
-                    ma = max(a, cut_l + ceil(N/2), cut_l + N - Lmax)
-                    mb = min(b, cut_l + floor(N/2) + 1, cut_l + Lmax + 1)
-                    aL = cut_l + Lmin
-                    a = max(a, aL + max(ceil((a - aL)/dL), 0)*dL)
-                    bL = cut_l + N - Lmin + 1
-                    b = min(b, bL - max(ceil((bL - b)/dL), 0)*dL)
-                    if a < mb: # forward cutting will run
-                        if to_push_fw:
-                            fractions.append(dict(gs[l+1:r+1]))
-                            ind_fw = len(fractions) - 1
-                            to_push_fw = False
-                        for cut_r in range(a, mb, dL):
-                            cut = ((cut_l + 1)%N, cut_r - cut_l)
-                            try:
-                                stabilizer_dict[cut].append(ind_fw)
-                            except:
-                                stabilizer_dict[cut] = [ind_fw]
-                    if b > ma: # backward cutting will run
-                        if to_push_bk:
-                            fractions.append(dict(gs[:l+1]+gs[r+1:]))
-                            ind_bk = len(fractions) - 1
-                            to_push_bk = False
-                        for cut_r in range(b - 1, ma - 1, -dL):
-                            cut = ((cut_r + 1)%N, cut_l - cut_r + N)
-                            try:
-                                stabilizer_dict[cut].append(ind_bk)
-                            except:
-                                stabilizer_dict[cut] = [ind_bk]
-    # now projective stabilizer are in fractions
-    # and stabilizer_dict recorded the index to fractions
-    # calculate the entropy
-    entropy_dict = {cut: pauli_rank([fractions[i] for i in inds])/2 
-                    for cut, inds in stabilizer_dict.items()}
-    return entropy_dict
-# SBRG class
-from copy import deepcopy
-from itertools import chain
+        return z2rank(adj)/2
+# half-system-size bipartite entropy (averaged over translation)
+def bipartite_entropy(system):
+    ent = Ent(system.taus)
+    l_cut = 0
+    L = int(system.size/2)
+    S = 0
+    ent.include(range(l_cut, l_cut + L))
+    for l_cut in range(0, system.size):
+        S += ent.entropy()
+        ent.exclude({l_cut})
+        ent.include({(l_cut + L) % system.size})
+    return S/system.size
+''' SBRG: doing RG, holding RG data and performing data analysis
+SBRG.tol      :: float : terms with energy < leading energy * tol will be truncated
+SBRG.max_rate :: float : each RG step allows at most (max_rate * num of off-diagonal terms) amount of new terms
+SBRG.size     :: int : num of bits in the Hilbert space
+SBRG.phybits  :: set : a collection of physical bits
+SBRG.H        :: Ham : where the Hamiltonian is held and processed
+SBRG.Hbdy     :: list : keep the original terms passed in with the model
+SBRG.Hblk     :: list : holographic bulk Hamiltonian transformed by RCC
+SBRG.Heff     :: list : terms in the effective Hamiltonian
+SBRG.RCC      :: list : C4 transformations from beginning to end
+SBRG.taus     :: Ham : stabilizers
+SBRG.trash    :: list : hold the energy scales that has been truncated
+'''
 class SBRG:
+    tol = 1.e-8
+    max_rate = 2.
     def __init__(self, model):
-        self.tol = 1.e-8
-        self.max_rate = 2.
-        self.recover = True
-        self.make_taus = True
-        self.make_Hblk = True
-        self.N = model['bits'] # total number of bits
-        self.Neff = 0 # number of effective bits that has been discovered
-        self.Hbdy = deepcopy(model['H']) # holographic boundary Hamiltonian
-        self.Heff = [] # effective Hamiltonian
-        self.Hblk = deepcopy(model['H']) # holographic bulk Hamiltonian
-        self.gates = [] # Clifford gates collected along the way
-        self.taus = [] # conserved quantities
-        self.trash = [] # terms truncated in 2nd order perturbation
-    # one RG step forward
-    def next_step(self):
-        i_now = self.Neff
-        H_UV = self.Hblk
-        if len(H_UV) == 0: # return if H = 0
-            # some emergent qubits are zero modes
-            self.Neff = self.N # no physical qubits left
-            return H_UV
-        # find the leading energy scale
-        [mat_H0, h0] = max(H_UV, key=term_val)
-        if abs(h0) == 0.: # leading energy scale vanishes
-            self.Neff = self.N # no physical qubits left
-            return H_UV
-        min_scale = abs(h0*self.tol)
-        # diagonalize the leading term
-        Us = find_rotation(mat_H0, i_now)
-        self.gates.append(Us)
-        # perform unitary transforms to the whole Hamiltonian
-        unitary_fd(Us, H_UV)
-        # and mark out diag and offdiag terms
-        H_gather = [(0 < term[0].get(i_now,0) < 3, term) for term in H_UV]
-        # off diagonal terms goes to H_offdiag
-        H_offdiag = [term for (is_offdiag, term) in H_gather 
-                     if is_offdiag]
-        # H_prod = H_offdiag^2/(2*h0) -> 2nd order perturbation
-        H_prod = perturbation(H_offdiag, h0, i_now,
-                              min_scale, self.max_rate, self.trash.extend)
-        # add the 2nd order perturbation with the diag part of H
-        H_prod += [term for (is_offdiag, term) in H_gather 
-                   if not is_offdiag]
-        # prepare to merge similar terms
-        H_prod.sort(key=term_mat) # strategy: merge by sorting
-        mat_last = {}
-        H_IR = []
-        for [mat, val] in H_prod: # loop of merging
-            if abs(val) > min_scale:
-                if mat != mat_last: # if mat is new
-                    H_IR.append([mat, val]) # add to H
-                    mat_last = mat # update mat_last
-                else: # if mat == mat_last
-                    H_IR[-1][1] += val # add val to
-        # mark out identity terms in the remaining physical space
-        H_gather = [(is_iden(term[0], i_now), term) for term in H_IR]
-        self.Hblk = [term for (iden, term) in H_gather if not iden]
-        self.Heff.extend([term for (iden, term) in H_gather if iden])
-        self.Neff = i_now + 1 # tau bits counter inc
-        return self.Hblk
-    # RG flow
+        self.size = model.size
+        self.phybits = set(range(self.size))
+        self.H = Ham(deepcopy(model.terms))
+        self.Hbdy = model.terms
+        self.Hblk = None
+        self.Heff = []
+        self.RCC = []
+        self.taus = None
+        self.trash = []
+    def findRs(self, mat):
+        if len(mat.Xs) > 0: # if X or Y exists, use it to pivot the rotation
+            pbit = min(mat.Xs) # take first off-diag qubit
+            return ([idot(Term(mkMat(set(),{pbit})), Term(mat))], pbit)
+        else: # if only Z
+            if len(mat.Zs) > 1:
+                for pbit in sorted(list(mat.Zs)): # find first Z in phybits
+                    if (pbit in self.phybits):
+                        tmp = Term(mkMat({pbit},set())) # set intermediate term
+                        return ([idot(tmp, Term(mat)), idot(Term(mkMat(set(),{pbit})), tmp)], pbit)
+            elif len(mat.Zs) == 1:
+                pbit = min(mat.Zs)
+        return ([], pbit)
+    def perturbation(self, H0, offdiag):
+        h0 = H0.val # set h0
+        min_prod = abs(h0)**2*SBRG.tol # set minimal product
+        # SiSj for commuting terms whose product val > min_prod
+        SiSj = [dot(term1, term2) for (term1, term2) in combinations(offdiag, 2)
+                if is_commute(term1.mat,term2.mat) and abs(term1.val*term2.val) > min_prod]
+        SiSj.sort(key=attrgetter('val')) # sort by val
+        # term number truncation
+        max_len = round(SBRG.max_rate*len(offdiag))
+        if len(SiSj) > max_len:
+            self.trash.extend([term.val/h0 for term in SiSj[:-max_len]])
+            SiSj = SiSj[-max_len:]
+        # multiply by H0 inverse
+        H0inv = Term(H0.mat,1/h0)
+        pert = [dot(H0inv,term) for term in SiSj]
+        # add backward correction
+        var = sum((term.val)**2 for term in offdiag) # also used in error estimate
+        pert.append(Term(H0.mat, var/(2*h0)))
+        return pert
+    def nextstep(self):
+        if not (self.phybits and self.H): # return if no physical bits or no H
+            self.phybits = set() # clear physical bits
+            return self
+        # get leading energy scale
+        H0 = self.H.terms[0]
+        h0 = H0.val
+        if not abs(h0): # if leading scale vanishes
+            self.phybits = set() # quench physical space
+            return self
+        # find Clifford rotations
+        Rs, pbit = self.findRs(H0.mat)
+        self.RCC.extend(Rs) # add to RCC
+        self.H.forward(Rs) # apply to H
+        # pick out offdiag terms
+        offdiag = [term for term in self.H.imap[pbit] if pbit in term.mat.Xs]
+        pert = self.perturbation(H0, offdiag) # 2nd order perturbation
+        for term in offdiag:
+            self.H.remove(term) # remove off-diagonal terms
+        self.H.extend(pert) # add perturbation to H
+        self.phybits.remove(pbit) # reduce physical bits
+        # remove identity terms in physical space
+        for term in list(self.H.imap[pbit]): # NOT REMOVE list(...)
+            if not ((term.mat.Xs | term.mat.Zs) & self.phybits):
+                self.Heff.append(term)
+                self.H.remove(term)
+        return (Term(H0.mat,h0), Rs, offdiag)
     def flow(self, step = float('inf')):
+        step = min(step, len(self.phybits)) # adjust RG steps
         # carry out RG flow
-        if step > (self.N - self.Neff):
-            step = self.N - self.Neff
         stp_count = 0
-        while (self.Neff < self.N and stp_count < step):
-            self.next_step()
+        while self.phybits and stp_count < step:
+            self.nextstep()
             stp_count += 1
-        if self.recover: # recover original locality
-            blk = list(range(self.N)) # to keep track of the action of SWAP gates
-            Ng = len(self.gates)
-            for l, Us in enumerate(reversed(self.gates)):
-                if len(Us)>0 and Us[-1][0] == 'SWAP': # if Us ends with a SWAP gate
-                    i, j = Us[-1][1]
-                    # perform swap to the C4 gates in IR direction
-                    swap(i, j, chain(*((C4[1] for C4 in C4s) for C4s in self.gates[Ng-l:])))
-                    blk[i], blk[j] = blk[j], blk[i]
-                    del Us[-1] # drop the SWAP gate
-            imap = {fr: to for (to, fr) in enumerate(blk)}
-            for term in self.Heff: # update Heff mat indices
-                term[0] = {imap[i]: mu for (i, mu) in term[0].items()}
-            # reconstruct the conserved quantities in the original basis
-            if self.make_taus: # recover original locality
-                self.taus = deepcopy([term for term in self.Heff if len(term[0]) == 1])
-                zms = set(range(self.N))-set(list(mat.keys())[0] for mat, val in self.taus)
-                self.Heff.extend([[{i: 3}, 0] for i in zms])
-                self.taus.extend([[{i: 3}, 0] for i in zms])
-                unitary_bk(list(chain(*self.gates)), self.taus)
-            # reconstruct the holographic bulk Hamiltonian
-            if self.make_Hblk: # recover original locality
-                self.Hblk = deepcopy(self.Hbdy)
-                unitary_fd(list(chain(*self.gates)), self.Hblk)
+    def make(self):
+        # reconstruct stabilizers
+        stabilizers = []
+        blkbits = set(range(self.size))
+        for term in self.Heff:
+            if len(term.mat.Zs) == 1:
+                stabilizers.append(deepcopy(term))
+                blkbits -= term.mat.Zs
+        stabilizers.extend(Term(mkMat(set(),{i}),0) for i in blkbits)
+        self.taus = Ham(stabilizers)
+        self.taus.backward(self.RCC)
+        # reconstruct holographic bulk Hamiltonian
+        self.Hblk = Ham(deepcopy(self.Hbdy))
+        self.Hblk.forward(self.RCC)
+    def run(self):
+        self.flow()
+        self.make()
         return self
-    # EE of a region, in unit of bit
-    def entropy(self, region):
-        # bipartition the system into A and B
-        A = set(region)
-        B = set(range(self.N)) - A
-        # filter out shared stablizers, project to A
-        sA = [{i: mu for i, mu in mat.items() if i in A} 
-             for mat, val in self.taus if is_shared(mat, A, B)]
-        # entropy is given by (1/2) rank of sA
-        return pauli_rank(sA)/2
-# Model Hamiltonians
-import random
-# TFIsing model
+    # calculate Anderson correlator between pairs in terms
+    def correlate(self, terms):
+        ops = Ham(terms)
+        ops.forward(self.RCC)
+        cor = {}
+        L = self.size
+        for (i,j) in combinations(range(len(ops)),2):
+            if len(ops.terms[i].mat.Xs ^ ops.terms[j].mat.Xs) == 0:
+                d = int(abs((j - i + L/2)%L - L/2))
+                cor[d] = cor.get(d,0) + 1
+        return cor
+''' Model: defines Hilbert space and Hamiltonian
+Model.size  :: int : num of bits
+Model.terms :: list : terms in the Hamiltonian
+'''
+class Model:
+    def __init__(self):
+        self.size = 0
+        self.terms = []
+# quantum Ising model
 def TFIsing(L, **para):
     # L - number of sites (assuming PBC)
     # model - a dict of model parameters
@@ -380,75 +461,42 @@ def TFIsing(L, **para):
         alpha_J = para.get('alpha_J',1)
         alpha_K = para.get('alpha_K',1)
         alpha_h = para.get('alpha_h',1)
-    H = [] # prepare empty H
+    model = Model()
+    model.size = L
     # translate over the lattice by deque rotation
-    H_append = H.append
+    H_append = model.terms.append
     rnd_beta = random.betavariate
     for i in range(L):
-        H_append([{i: 1, (i+1)%L: 1}, para['J']*rnd_beta(alpha_J, 1)])
-        H_append([{i: 3, (i+1)%L: 3}, para['K']*rnd_beta(alpha_K, 1)])
-        H_append([{i: 3}, para['h']*rnd_beta(alpha_h, 1)])
-    H = [term for term in H if abs(term[1]) > 0]
-    return {'bits': L, 'H': H}
-# Kitaev random interaction model
-def KitaevRIM(L, alpha):
-    # L - number of qubits
-    # alpha - shape of initial distribution
-    fs = [] # prepare the reps of fermions
-    for k in range(L):
-        fs.append({i: 3 for i in range(k)})
-        fs[-1][k] = 1
-        fs.append({i: 3 for i in range(k)})
-        fs[-1][k] = 2
-    N = 2*L
-    H = []
-    H_append = H.append
+        H_append(Term(mkMat({i: 1, (i+1)%L: 1}), para['J']*rnd_beta(alpha_J, 1)))
+        H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['K']*rnd_beta(alpha_K, 1)))
+        H_append(Term(mkMat({i: 3}), para['h']*rnd_beta(alpha_h, 1)))
+    model.terms = [term for term in model.terms if abs(term.val) > 0]
+    return model
+# XYZ model
+def XYZ(L, **para):
+    # L - number of sites (assuming PBC)
+    # model - a dict of model parameters
+    try: # set parameter alpha
+        alpha = para['alpha']
+        alpha_X = alpha
+        alpha_Y = alpha
+        alpha_Z = alpha
+    except:
+        alpha_X = para.get('alpha_x',1)
+        alpha_Y = para.get('alpha_y',1)
+        alpha_Z = para.get('alpha_z',1)
+    model = Model()
+    model.size = L
+    # translate over the lattice by deque rotation
+    H_append = model.terms.append
     rnd_beta = random.betavariate
-    for i1 in range(N):
-        f1 = fs[i1]
-        f1_get = f1.get
-        f1_keys = f1.keys()
-        for i2 in range(i1+1,N):
-            f2 = fs[i2]
-            f2_get = f2.get
-            f2_keys = f2.keys()
-            f12 = newmat(dotover(merge(f1_get,f2_get,f1_keys,f2_keys)))
-            f12_get = f12.get
-            f12_keys = f12.keys()
-            for i3 in range(i2+1,N):
-                f3 = fs[i3]
-                f3_get = f3.get
-                f3_keys = f3.keys()
-                f123 = newmat(dotover(merge(f12_get,f3_get,f12_keys,f3_keys)))
-                f123_get = f123.get
-                f123_keys = f123.keys()
-                for i4 in range(i3+1,N):
-                    f4 = fs[i4]
-                    f4_get = f4.get
-                    f4_keys = f4.keys()
-                    f1234 = newmat(dotover(merge(f123_get,f4_get,f123_keys,f4_keys)))
-                    H_append([f1234, rnd_beta(alpha,1)])
-    return {'bits': L, 'H': H}
-def KitaevRIM2(L, M):
-    # L - number of qubits
-    # alpha - shape of initial distribution
-    fs = [] # prepare the reps of fermions
-    for k in range(L):
-        fs.append({i: 3 for i in range(k)})
-        fs[-1][k] = 1
-        fs.append({i: 3 for i in range(k)})
-        fs[-1][k] = 2
-    N = 2*L
-    H = []
-    H_append = H.append
-    rand_sample = random.sample
-    rand = random.random
-    for a in range(M):
-        f4 = [[mat, 1] for mat in rand_sample(fs, 4)]
-        v = dot(dot(f4[0],f4[1],1),dot(f4[2],f4[3],-1))
-        v[1] = v[1]*rand()
-        H_append(v)
-    return {'bits': L, 'H': H}
+    for i in range(L):
+        H_append(Term(mkMat({i: 1, (i+1)%L: 1}), para['Jx']*rnd_beta(alpha_X, 1)))
+        H_append(Term(mkMat({i: 2, (i+1)%L: 2}), para['Jy']*rnd_beta(alpha_Y, 1)))
+        H_append(Term(mkMat({i: 3, (i+1)%L: 3}), para['Jz']*rnd_beta(alpha_Z, 1)))
+    model.terms = [term for term in model.terms if abs(term.val) > 0]
+    return model
+
 # Toolbox 
 # I/O 
 # JSON pickle: export to communicate with Mathematica 
@@ -456,6 +504,8 @@ import jsonpickle
 def export(filename, obj):
     with open(filename + '.json', 'w') as outfile:
         outfile.write(jsonpickle.encode(obj))
+def export_Ham(filename, ham):
+    export(filename, [[term.val,[list(term.mat.Xs),list(term.mat.Zs)]] for term in ham])
 import pickle
 # pickle: binary dump and load for python.
 def dump(filename, obj):
@@ -464,13 +514,3 @@ def dump(filename, obj):
 def load(filename):
     with open(filename + '.dat', 'br') as infile:
         return pickle.load(infile)
-# visualization
-import matplotlib.pyplot as plt
-def hist_plot(data):
-    if len(data) > 1:
-        plt.hist(data, 30)
-        plt.xlabel("Energy Scale")
-        plt.ylabel("Frequency")
-        plt.show()
-    else:
-        print('hist_plot: input has only one data point.')
